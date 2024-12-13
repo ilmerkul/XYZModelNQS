@@ -66,14 +66,14 @@ def ham_xx(n, j, h) -> sparse.csr_matrix:
     :param h:
     :rtype: sparse.csr_matrix
     """
-    res = sparse.csr_matrix((2 ** N, 2 ** N), dtype=np.complex)
+    res = sparse.csr_matrix((2 ** n, 2 ** n), dtype=np.complex)
 
-    for i in range(N - 1):
+    for i in range(n - 1):
         res += -j * (
-            sigmax_k(i, N) * sigmax_k(i + 1, N) + sigmay_k(i, N) * sigmay_k(i + 1, N)
+            sigmax_k(i, n) * sigmax_k(i + 1, n) + sigmay_k(i, n) * sigmay_k(i + 1, n)
         )
-        res += h * sigmaz_k(i, N)
+        res += h * sigmaz_k(i, n)
 
-    res += h * sigmaz_k(N - 1, N)
+    res += h * sigmaz_k(n - 1, n)
 
     return res

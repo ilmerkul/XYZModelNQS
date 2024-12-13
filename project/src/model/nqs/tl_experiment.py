@@ -8,7 +8,7 @@ from flax.core import freeze, unfreeze
 import jax
 from jax import numpy as jnp
 from jax.random import PRNGKey
-from src.struct import Results
+from ...result.struct import Results
 
 from .callbacks import VarianceCallback
 from .transfer_learning import NN
