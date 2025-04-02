@@ -1,7 +1,9 @@
-import flax.linen as nn
 from typing import Any
-from jax import numpy as jnp, nn as jnn
+
+import flax.linen as nn
 import netket
+from jax import nn as jnn
+from jax import numpy as jnp
 
 default_kernel_init = jnn.initializers.normal(1e-1)
 default_bias_init = jnn.initializers.normal(1e-4)

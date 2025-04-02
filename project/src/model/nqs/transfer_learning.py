@@ -1,6 +1,7 @@
 from typing import Any
 
-from jax import numpy as jnp, nn as jnn
+from jax import nn as jnn
+from jax import numpy as jnp
 from netket import nn
 
 default_kernel_init = jnn.initializers.normal(1e-1)

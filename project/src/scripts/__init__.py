@@ -1,1 +1,1 @@
-from .ops import sx, sy, sz, identity, sigmaz_k, sigmax_k, sigmay_k, ham_xx
+from .ops import ham_xx, identity, sigmax_k, sigmay_k, sigmaz_k, sx, sy, sz

@@ -2,15 +2,16 @@ import sys
 from pathlib import Path
 
 import matplotlib.pylab as plt
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 base_prj_path = Path(__file__).parent.parent
 sys.path.append(str(base_prj_path.absolute()))
 
-from python.XXModelImpl import exact_solution
-from main import check_bad_params
 from magnetisation_analytical import get_m_for_h
+from python.XXModelImpl import exact_solution
+
+from main import check_bad_params
 
 plt.style.use("ggplot")
 

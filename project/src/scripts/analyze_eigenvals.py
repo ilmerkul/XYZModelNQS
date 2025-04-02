@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from mpi4py import MPI, futures
 import numpy as np
+from mpi4py import MPI, futures
 from scipy.sparse import linalg
 from tqdm import tqdm
 
@@ -11,7 +11,6 @@ base_prj_path = Path(__file__).parent.parent
 sys.path.append(str(base_prj_path.absolute()))
 
 from main import check_bad_params
-
 from scripts.exact_test import ham
 
 plt.style.use("ggplot")

@@ -1,5 +1,5 @@
-import sys
 import json
+import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -10,8 +10,9 @@ prj_root = Path(__file__).parent.absolute()
 if str(prj_root) not in sys.path:
     sys.path.append(str(prj_root))
 
-from src.model import get_spin_operators, get_xx_netket_op, get_xy_netket_op
 from src.model.tl_experiment import Model
+
+from src.model import get_spin_operators, get_xx_netket_op, get_xy_netket_op
 
 if __name__ == "__main__":
     print(f"NetKet version: {nk.__version__}")

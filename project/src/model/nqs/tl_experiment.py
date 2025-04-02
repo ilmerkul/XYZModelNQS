@@ -1,15 +1,15 @@
 from pathlib import Path
 from typing import Dict, Optional
 
+import jax
 import netket as nk
 import numpy as np
 import optax
 from flax.core import freeze, unfreeze
-import jax
 from jax import numpy as jnp
 from jax.random import PRNGKey
-from ...result.struct import Results
 
+from ...result.struct import Results
 from .callbacks import VarianceCallback
 from .transfer_learning import NN
 
