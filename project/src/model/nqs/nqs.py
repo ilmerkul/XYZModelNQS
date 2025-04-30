@@ -11,7 +11,8 @@ from tqdm import tqdm
 from ...result.struct import Results
 from ..NN import (CNN, CNNConfig, EnergyBasedTransformer,
                   EnergyBasedTransformerConfig, EnergyOptimModel, Transformer,
-                  TransformerConfig, PhaseTransformer)
+                  TransformerConfig, PhaseTransformer, GCNN,
+                  TransformerSampler)
 from .callbacks import RHatStop, VarianceCallback
 from .operators import get_model_netket_op
 
@@ -57,20 +58,49 @@ class Model:
                                         )
         self.nn = PhaseTransformer(self.nn_cfg)
         # self.nn = CNN(CNNConfig())
+        # self.nn = GCNN(self.n)
 
     def set_sampler(self, n_chains: int = 16):
         self.n_chains = n_chains
-        self.sampler = nk.sampler.MetropolisSampler(
-            self.hilbert,
-            rule=nk.sampler.rules.ExchangeRule(graph=self.graph, d_max=5),
-            n_chains=n_chains,
-            dtype=jnp.float64,
-        )
+        # self.sampler = nk.sampler.MetropolisSampler(
+        #    self.hilbert,
+        #    rule=nk.sampler.rules.ExchangeRule(graph=self.graph, d_max=5),
+        #    n_chains=n_chains,
+        #    dtype=jnp.float64,
+        # )
+        self.sampler = TransformerSampler(self.hilbert)
 
     def set_optimizer(self, lr: float = 1e-3):
+        def zero_grads():
+            def init_fn(_):
+                return ()
+
+            def update_fn(updates, state, params=None):
+                return jax.tree_map(jnp.zeros_like, updates), ()
+
+            return optax.GradientTransformation(init_fn, update_fn)
+
+        def map_nested_fn(fn):
+            def map_fn(nested_dict):
+                p = {k: (map_fn(v) if isinstance(v, dict) else fn(k, v))
+                     for k, v in nested_dict.items()}
+                return p
+
+            return map_fn
+
+        label_fn = map_nested_fn(
+            lambda k, _: "tr" if k.startswith("tr") else "pqc")
+        self.optimizer = optax.multi_transform(
+            {"tr": optax.adam(learning_rate=optax.join_schedules([
+                optax.constant_schedule(lr * 10),
+                optax.exponential_decay(init_value=lr * 10,
+                                        transition_steps=10,
+                                        decay_rate=0.8, end_value=lr)
+            ], boundaries=[25])),
+                "pqc": zero_grads()},
+            label_fn)
+        self.optimizer_pqc = nk.optimizer.Adam(1e-3)
         self.optimizer = nk.optimizer.Adam(1e-3)
-        # self.optimizer = nk.optimizer.RmsProp(1e-3)
-        # self.optimizer = nk.optimizer.Sgd(1e-3)
 
         # self.optimizer = optax.adam(learning_rate=optax.cosine_decay_schedule(init_value=1e-2,
         #                                                                      decay_steps=10))
@@ -86,7 +116,7 @@ class Model:
         #    optax.exponential_decay(init_value=lr * 10, transition_steps=40,
         #                            decay_rate=0.8, end_value=lr)
         # ], boundaries=[25]))
-        #self.optimizer = optax.sgd(
+        # self.optimizer = optax.sgd(
         #    learning_rate=optax.exponential_decay(init_value=1e-3,
         #                                          transition_steps=10,
         #                                          decay_rate=0.9,
@@ -96,8 +126,8 @@ class Model:
         #    nesterov=True,
         # )
 
-    def set_vmc(self, min_n_samples: int = 200, scale_n_samples: int = 45):
-        #self.n_samples = max([min_n_samples, self.n * scale_n_samples])
+    def set_vmc(self, min_n_samples: int = 2000, scale_n_samples: int = 45):
+        # self.n_samples = max([min_n_samples, self.n * scale_n_samples])
         self.n_samples = min_n_samples
 
         self.mcstate = nk.vqs.MCState(
@@ -106,22 +136,34 @@ class Model:
             init_fun=self.init_fun,
             apply_fun=self.apply_fun,
         )
-        # sr = nk.optimizer.SR(diag_shift=0.1, solver_restart=False)
+        sr = nk.optimizer.SR(diag_shift=0.1, solver_restart=False)
         self.vmc = nk.driver.VMC(
             hamiltonian=self.ham,
             optimizer=self.optimizer,
             variational_state=self.mcstate,
-            # preconditioner=sr,
+            preconditioner=sr,
         )
 
     def set_ops(self, ops: Dict[str, nk.operator.LocalOperator]):
         ops["e"] = self.ham
         self.ops = ops
 
-    def train(self, n_iter: int = 100):
+    def train(self, n_iter: int = 500):
         logger = nk.logging.RuntimeLog()
+
         self.vmc.run(
-            n_iter=n_iter,
+            n_iter=n_iter // 2,
+            out=logger,
+            callback=[
+                # RHatStop(base=1.3, stop_cnt=30),
+                # VarianceCallback(base=5.0e-20),
+            ],
+        )
+
+        self.vmc.optimizer = self.optimizer_pqc
+
+        self.vmc.run(
+            n_iter=n_iter // 2,
             out=logger,
             callback=[
                 # RHatStop(base=1.3, stop_cnt=30),
@@ -339,8 +381,11 @@ class Model:
     def save_model(self, path: Path):
         self.nn.save(str(path.absolute()))
 
-    def apply_fun(self, variables, params, mutable=False):
-        return self.nn.apply(variables, params,
+    def apply_fun(self, params, variables, mutable=False, generate=False,
+                  n_chains: int = 16):
+        return self.nn.apply(params, variables,
+                             generate=generate,
+                             n_chains=n_chains,
                              rngs={'dropout': jax.random.PRNGKey(42)},
                              mutable=mutable)
 

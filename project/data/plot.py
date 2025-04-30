@@ -12,15 +12,16 @@ if nb_dir not in sys.path:
 
 from src.model.nqs.operators import get_model_netket_op
 
+
 if __name__ == '__main__':
-    n = 10
+    n = 5
     hilbert = nk.hilbert.Spin(N=n, s=1 / 2)
 
     params = {
         'n': n,
         'j': -1.0,
-        'lam': 0.4,
-        'gamma': 0,
+        'lam': 0.5,
+        'gamma': 1,
         'hilbert': hilbert
     }
     h = np.linspace(0.0, 1.5, 100)

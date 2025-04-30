@@ -1,20 +1,15 @@
 [tool.poetry]
 name = "xyzmodelnqs"
 version = "0.1.0"
-description = "Magnetic spin model"
-authors = ["Ilya Merkulov <merkuloviv@my.msu.ru>"]
+description = "Magnetic spin states."
+authors = ["merkul"]
 license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.12"
-numpy = "^2.2.4"
-netket = "^3.16.1.post1"
-matplotlib = "^3.10.1"
-cmake = "^4.0.0"
-pandas = "^2.2.3"
-jax = "^0.5.3"
-jaxlib = "^0.5.3"
+python = "^3.11"
+netket = "^3.17.1"
+pennylane = "^0.41.0"
 
 
 [build-system]

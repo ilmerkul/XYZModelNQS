@@ -6,3 +6,5 @@ from .modelBasedTransformer import (EnergyBasedTransformer,
 from .sym import SymmModel
 from .transformer import Transformer, TransformerConfig
 from .phaseTransformer import PhaseTransformer
+from .GCNN import GCNN
+from .sampler import TransformerSampler
