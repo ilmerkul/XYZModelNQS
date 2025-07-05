@@ -15,7 +15,11 @@ from scripts.exact_test import ham
 
 plt.style.use("ggplot")
 plt.rcParams.update(
-    {"text.usetex": True, "font.family": "sans-serif", "font.sans-serif": "Helvetica",}
+    {
+        "text.usetex": True,
+        "font.family": "sans-serif",
+        "font.sans-serif": "Helvetica",
+    }
 )
 
 
@@ -75,7 +79,9 @@ if __name__ == "__main__":
                     points.append(bp + dif)
                     points.append(bp - dif)
 
-            sys.stdout.write(f"There are {len(points)} candiadtes. Start the computataions!\n")
+            sys.stdout.write(
+                f"There are {len(points)} candiadtes. Start the computataions!\n"
+            )
             sys.stdout.flush()
             futures = {p: pool.submit(estimate_diff, N=N, h=p, j=1.0) for p in points}
 
@@ -87,7 +93,12 @@ if __name__ == "__main__":
             for bp in bad_points:
                 ax.axvline(bp, linestyle="--", label=f"Degeneracy point {bp}")
 
-            ax.plot(results.keys(), results.values(), "o", label=r"$\frac{| E_0 - E_1 |}{| E_0 |}$")
+            ax.plot(
+                results.keys(),
+                results.values(),
+                "o",
+                label=r"$\frac{| E_0 - E_1 |}{| E_0 |}$",
+            )
             ax.set_xlabel("h")
             ax.set_ylabel("")
             ax.legend()

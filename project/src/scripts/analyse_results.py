@@ -9,9 +9,8 @@ base_prj_path = Path(__file__).parent.parent
 sys.path.append(str(base_prj_path.absolute()))
 
 from magnetisation_analytical import get_m_for_h
-from python.XXModelImpl import exact_solution
-
 from main import check_bad_params
+from python.XXModelImpl import exact_solution
 
 plt.style.use("ggplot")
 

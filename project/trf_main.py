@@ -10,9 +10,8 @@ prj_root = Path(__file__).parent.absolute()
 if str(prj_root) not in sys.path:
     sys.path.append(str(prj_root))
 
-from src.model.tl_experiment import Model
-
 from src.model import get_spin_operators, get_xx_netket_op, get_xy_netket_op
+from src.model.tl_experiment import Model
 
 if __name__ == "__main__":
     print(f"NetKet version: {nk.__version__}")
@@ -81,9 +80,7 @@ if __name__ == "__main__":
         training_file = prefix_path.joinpath(
             f"training_logs_scratch_is_{args.from_scratch}.json"
         )
-        exact_file = prefix_path.joinpath(
-            "exact_sol.txt"
-        )
+        exact_file = prefix_path.joinpath("exact_sol.txt")
 
         with exact_file.open("w") as file:
             file.write(f"{exact[0]:.6f}")

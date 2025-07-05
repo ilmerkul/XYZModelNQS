@@ -7,9 +7,8 @@ import numpy as np
 base_prj_path = Path(__file__).parent.parent
 sys.path.append(str(base_prj_path.absolute()))
 
-from python.ExactAnalytics import get_ellist
-
 from main import check_bad_params
+from python.ExactAnalytics import get_ellist
 
 plt.style.use("ggplot")
 plt.rc("text", usetex=True)
@@ -44,7 +43,12 @@ if __name__ == "__main__":
     f: plt.Figure = plt.figure(figsize=(8, 6))
     ax = f.subplots(2)
     ax[0].plot(h_list, m_list, ".", label=r"$f(h) = \frac{l_0}{n} - \frac{1}{2}$")
-    ax[0].plot(h_list, 1 / np.pi * np.arccos(h_list) - 0.5, ".-", label=r"$f(h) = \frac{1}{\pi}\arccos(\frac{h}{J}) - \frac{1}{2}$")
+    ax[0].plot(
+        h_list,
+        1 / np.pi * np.arccos(h_list) - 0.5,
+        ".-",
+        label=r"$f(h) = \frac{1}{\pi}\arccos(\frac{h}{J}) - \frac{1}{2}$",
+    )
     ax[0].legend()
     ax[0].set_xlabel("h")
     ax[0].set_ylabel("m")

@@ -17,13 +17,15 @@ class SymmModel(nn.Module):
     hidden_bias_init: Any = default_bias_init
 
     def setup(self):
-        self.dense = netket.nn.DenseSymm(symmetries=self.automorphisms,
-                                         features=self.alpha,
-                                         kernel_init=self.kernel_init,
-                                         bias_init=self.hidden_bias_init)
-        self.dense1 = nn.Dense(features=1,
-                               kernel_init=self.kernel_init,
-                               bias_init=self.hidden_bias_init)
+        self.dense = netket.nn.DenseSymm(
+            symmetries=self.automorphisms,
+            features=self.alpha,
+            kernel_init=self.kernel_init,
+            bias_init=self.hidden_bias_init,
+        )
+        self.dense1 = nn.Dense(
+            features=1, kernel_init=self.kernel_init, bias_init=self.hidden_bias_init
+        )
 
     @nn.compact
     def __call__(self, x):

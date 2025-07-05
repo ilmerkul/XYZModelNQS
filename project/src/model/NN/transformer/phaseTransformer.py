@@ -2,10 +2,10 @@ import flax.linen as nn
 import jax
 from jax import lax
 
-from .GCNN import GCNN
-from .sym import SymmModel
+from ..feedforward.sym import SymmModel
+from ..graph.GCNN import GCNN
+from ..quantum.PQC import PQC
 from .transformer import Transformer, TransformerConfig
-from .PQC import PQC
 
 
 class PhaseTransformer(nn.Module):
@@ -18,18 +18,26 @@ class PhaseTransformer(nn.Module):
         self.symm_model = SymmModel(self.config.automorphisms)
 
     @nn.compact
-    def __call__(self, x: jax.Array, generate: bool = False,
-                 n_chains: int = 16):
-        p = self.transformer(x, generate=generate, n_chains=n_chains)
+    def __call__(
+        self,
+        x: jax.Array,
+        generate: bool = False,
+        n_chains: int = 16,
+        key: jax.Array = None,
+    ):
+        print(
+            generate,
+            x,
+        )
+        σ, log_prob = self.transformer(x, generate=generate, n_chains=n_chains, key=key)
+        print(σ, σ.shape)
 
         if not generate:
-            print(x.shape)
-
-            #g = self.gccn(x)
+            # g = self.gccn(x)
             g = self.symm_model(x)
 
             phi = self.pqc(x)
 
-            return p ** 0.5 * lax.complex(lax.cos(g), lax.sin(g)) * phi
+            return 0.5 * log_prob + lax.complex(0.0, g) + phi
 
-        return p
+        return σ, log_prob

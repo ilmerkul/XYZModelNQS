@@ -1,10 +1,11 @@
-import netket as nk
-import jax
-from flax import linen as nn
 from typing import Any
+
+import jax
+import netket as nk
+import pennylane as qml
+from flax import linen as nn
 from jax import nn as jnn
 from jax import numpy as jnp
-import pennylane as qml
 
 default_kernel_init = jnn.initializers.normal(1e-1)
 default_bias_init = jnn.initializers.normal(1e-4)
@@ -18,25 +19,21 @@ class PQC(nn.Module):
     hidden_bias_init: Any = default_bias_init
 
     def setup(self):
-        self.q_x1 = self.param('pqc_q_x1',
-                               nn.initializers.xavier_uniform(),
-                               (self.N_l + 1, self.N_q))
-        self.q_z1 = self.param('pqc_q_z1',
-                               nn.initializers.xavier_uniform(),
-                               (self.N_l + 1, self.N_q))
-        self.c1 = nn.Embed(num_embeddings=1,
-                           name="pqc_embedding1",
-                           features=self.N_q)
+        self.q_x1 = self.param(
+            "pqc_q_x1", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        )
+        self.q_z1 = self.param(
+            "pqc_q_z1", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        )
+        self.c1 = nn.Embed(num_embeddings=1, name="pqc_embedding1", features=self.N_q)
 
-        self.q_x2 = self.param('pqc_q_x2',
-                               nn.initializers.xavier_uniform(),
-                               (self.N_l + 1, self.N_q))
-        self.q_z2 = self.param('pqc_q_z2',
-                               nn.initializers.xavier_uniform(),
-                               (self.N_l + 1, self.N_q))
-        self.c2 = nn.Embed(num_embeddings=1,
-                           name="pqc_embedding2",
-                           features=self.N_q)
+        self.q_x2 = self.param(
+            "pqc_q_x2", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        )
+        self.q_z2 = self.param(
+            "pqc_q_z2", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        )
+        self.c2 = nn.Embed(num_embeddings=1, name="pqc_embedding2", features=self.N_q)
 
         self.circuit = self._make_circuit()
 
@@ -48,7 +45,7 @@ class PQC(nn.Module):
         f1 = self._quantum_circuit(self.q_x1, self.q_z1, c1, x)
         f2 = self._quantum_circuit(self.q_x2, self.q_z2, c2, x)
 
-        return jax.lax.exp(f1 + 1j * f2)
+        return f1 + 1j * f2
 
     def _make_circuit(self):
         dev = qml.device("default.qubit", wires=self.N_q)

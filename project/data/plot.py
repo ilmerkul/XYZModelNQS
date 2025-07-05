@@ -12,18 +12,11 @@ if nb_dir not in sys.path:
 
 from src.model.nqs.operators import get_model_netket_op
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     n = 5
     hilbert = nk.hilbert.Spin(N=n, s=1 / 2)
 
-    params = {
-        'n': n,
-        'j': -1.0,
-        'lam': 0.5,
-        'gamma': 1,
-        'hilbert': hilbert
-    }
+    params = {"n": n, "j": -1.0, "lam": 0.5, "gamma": 1, "hilbert": hilbert}
     h = np.linspace(0.0, 1.5, 100)
     e = []
     for i in range(h.shape[0]):
@@ -34,25 +27,22 @@ if __name__ == '__main__':
         e.append(en)
 
     fig, ax = plt.subplots(nrows=2, ncols=3, sharex=True, sharey=False)
-    fig.suptitle('Model j=-1, lam=0.5, gamma=1.0')
+    fig.suptitle("Model j=-1, lam=0.5, gamma=1.0")
 
     data_path = f'report_n{params["n"]}_j{params["j"]}_hNone_lam{params["lam"]}_gamma{params["gamma"]}.csv'
     data = pd.read_csv(data_path)
 
     ax[0][0].scatter(h, e)
-    ax[0][0].set(xlabel=r'$h$', ylabel=r'$\frac{E}{n}$')
-    ax[0][0].scatter(data['h'], data['estimated_e'])
+    ax[0][0].set(xlabel=r"$h$", ylabel=r"$\frac{E}{n}$")
+    ax[0][0].scatter(data["h"], data["estimated_e"])
 
-    ax[1][0].set(xlabel=r'$h$',
-                 ylabel=r'$\langle \hat{S}_i^x \hat{S}_{i+1}^x \rangle$')
-    ax[1][0].scatter(data['h'], data['estimated_xx'])
+    ax[1][0].set(xlabel=r"$h$", ylabel=r"$\langle \hat{S}_i^x \hat{S}_{i+1}^x \rangle$")
+    ax[1][0].scatter(data["h"], data["estimated_xx"])
 
-    ax[1][1].set(xlabel=r'$h$',
-                 ylabel=r'$\langle \hat{S}_i^y \hat{S}_{i+1}^y \rangle$')
-    ax[1][1].scatter(data['h'], data['estimated_yy'])
+    ax[1][1].set(xlabel=r"$h$", ylabel=r"$\langle \hat{S}_i^y \hat{S}_{i+1}^y \rangle$")
+    ax[1][1].scatter(data["h"], data["estimated_yy"])
 
-    ax[1][2].set(xlabel=r'$h$',
-                 ylabel=r'$\langle \hat{S}_i^z \hat{S}_{i+1}^z \rangle$')
-    ax[1][2].scatter(data['h'], data['estimated_zz'])
+    ax[1][2].set(xlabel=r"$h$", ylabel=r"$\langle \hat{S}_i^z \hat{S}_{i+1}^z \rangle$")
+    ax[1][2].scatter(data["h"], data["estimated_zz"])
 
     plt.show()

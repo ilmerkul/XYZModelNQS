@@ -66,7 +66,7 @@ def ham_xx(n, j, h) -> sparse.csr_matrix:
     :param h:
     :rtype: sparse.csr_matrix
     """
-    res = sparse.csr_matrix((2 ** n, 2 ** n), dtype=np.complex)
+    res = sparse.csr_matrix((2**n, 2**n), dtype=np.complex)
 
     for i in range(n - 1):
         res += -j * (
