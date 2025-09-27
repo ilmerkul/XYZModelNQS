@@ -7,7 +7,7 @@ import netket as nk
 from flax import linen as nn
 from netket.jax import apply_chunked, dtype_real
 from netket.jax.sharding import shard_along_axis
-from netket.sampler.base import SamplerState, Sampler
+from netket.sampler.base import Sampler, SamplerState
 from netket.utils.struct import dataclass
 from netket.utils.types import PyTree
 from src.model.NN import Transformer, TransformerConfig
@@ -19,10 +19,29 @@ class TransformerSamplerState(SamplerState):
     kv_cache: jnp.ndarray
     log_prob: jnp.ndarray
 
+    def __init__(
+        self,
+        rng: jnp.ndarray,
+        σ: jnp.ndarray,
+        kv_cache: jnp.ndarray,
+        log_prob: jnp.ndarray,
+    ):
+        self.rng = rng
+        self.σ = σ
+        self.kv_cache = kv_cache
+        self.log_prob = log_prob
+        super().__init__()
+
 
 class TransformerSampler(Sampler):
-    def __init__(self, hilbert, machine_pow=2, dtype=float):
+    sample_ratio: float = None
+
+    def __init__(
+        self, hilbert, sample_ratio: float = 0.2, machine_pow: int = 2, dtype=float
+    ):
         super().__init__(hilbert, machine_pow=machine_pow, dtype=dtype)
+
+        self.sample_ratio = sample_ratio
 
     @partial(jax.jit, static_argnames=("machine"))
     def _init_state(self, machine, parameters, key):
@@ -34,7 +53,8 @@ class TransformerSampler(Sampler):
         log_prob = jnp.full((self.n_batches,), -jnp.inf, dtype=dtype_real(output_dtype))
         log_prob = shard_along_axis(log_prob, axis=0)
 
-        return TransformerSamplerState(rng=rng, σ=σ, log_prob=log_prob, kv_cache=None)
+        state = TransformerSamplerState(rng=rng, σ=σ, log_prob=log_prob, kv_cache=None)
+        return state
 
     @partial(jax.jit, static_argnames=("machine"))
     def _reset(self, machine, parameters, state):
@@ -55,13 +75,17 @@ class TransformerSampler(Sampler):
         def loop_body(s):
             s_key, key = jax.random.split(s["key"])
 
+            batch_dim = int(chain_length * 0.7)
+
             σ, log_prob = machine.apply(
-                parameters, None, generate=True, n_chains=2000, key=key
+                parameters, None, generate=True, batch_dim=batch_dim, key=key
             )
 
             s["key"] = s_key
-            s["σ"] = σ
-            s["log_prob"] = log_prob
+            s["σ"] = jnp.concat([s["σ"][: chain_length - batch_dim, :], σ], axis=0)
+            s["log_prob"] = jnp.concat(
+                [s["log_prob"][: chain_length - batch_dim], log_prob], axis=0
+            )
 
             return s
 
@@ -77,10 +101,13 @@ class TransformerSampler(Sampler):
             rng=s["key"], σ=s["σ"], log_prob=s["log_prob"], kv_cache=s["kv_cache"]
         )
 
+        σ = jnp.expand_dims(new_state.σ, axis=0)
+        log_prob = jnp.expand_dims(new_state.log_prob, axis=0)
+
         if return_log_probabilities:
-            return (new_state.σ, new_state.log_prob), new_state
+            return (σ, log_prob), new_state
         else:
-            return new_state.σ, new_state
+            return σ, new_state
 
     def __repr__(self):
         return f"TransformerSampler(hilbert={self.hilbert})"

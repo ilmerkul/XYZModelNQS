@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Tuple
 
 import jax
 import netket as nk
@@ -14,7 +14,7 @@ from netket.utils.group import PermutationGroup
 @struct.dataclass
 class TransformerConfig:
     # Number of encoder layer pairs
-    layers: int = 4
+    layers: int = 2
 
     # Number of units in dense layer
     mlp_dim_scale: int = 4
@@ -23,7 +23,7 @@ class TransformerConfig:
     length: int = 10
 
     # Number of embedding dim
-    features: int = 32
+    features: int = 16
 
     # Number of heads in multihead attention
     num_heads: int = 1
@@ -213,7 +213,7 @@ class MultiheadAttention(nn.Module):
 
     def rope_embedding(
         self, hid_head: int, length_q: int, query: jax.Array, key: jax.Array
-    ) -> (jax.Array, jax.Array):
+    ) -> Tuple[jax.Array, jax.Array]:
         def get_rope(x):
             base = 1000
             d = hid_head
@@ -232,9 +232,8 @@ class MultiheadAttention(nn.Module):
                 [-x_rope[:, :, :, d_2:], x_rope[:, :, :, :d_2]], axis=-1
             )
 
-            x_rope = (x_rope * cos_cached[: x.shape[0]]) + (
-                neg_half_x * sin_cached[: x.shape[0]]
-            )
+            x_rope = x_rope * cos_cached[:length]
+            x_rope += neg_half_x * sin_cached[:length]
 
             return jnp.concatenate((x_rope, x_pass), axis=-1)
 
@@ -276,22 +275,17 @@ class MultiheadAttention(nn.Module):
 
     @classmethod
     def attention_mask(cls, input_tokens):
-        """Mask-making helper for attention weights (mask for padding)
-        Args:
-            input_tokens: [batch_size, tokens_length]
-        return:
-            mask: [batch_size, num_heads=1, query_length, key_value_length]
-        """
         mask = jnp.multiply(input_tokens[:, :, None], input_tokens[:, None, :])
         mask = mask[:, None, ...]
         mask = lax.select(mask > 0, jnp.full(mask.shape, 1), jnp.full(mask.shape, 0))
+
         return mask
 
     @classmethod
     def causal_mask(cls, input_tokens):
         mask = cls.attention_mask(input_tokens)
         mask = jnp.full(mask.shape, 1)
-        mask -= jnp.triu(mask, k=1)
+        # mask -= jnp.triu(mask, k=1)
         return mask
 
 
@@ -385,7 +379,7 @@ class Transformer(nn.Module):
             self.features_2 //= 2
 
         self.embed = nn.Embed(
-            num_embeddings=cfg.n_state,
+            num_embeddings=1,  # cfg.n_state,
             features=self.features_2,
             name="tr_embed",
             dtype=cfg.dtype,
@@ -458,8 +452,14 @@ class Transformer(nn.Module):
         return input_embedding
 
     def get_input(self, batch_size: int, encoder_input_tokens: jax.Array) -> jax.Array:
-        encoder_input_tokens = (encoder_input_tokens > 0).astype(jnp.int32)
-        state_embedding = self.embed(encoder_input_tokens)
+        # encoder_input_tokens = (encoder_input_tokens > 0).astype(jnp.int32)
+        # state_embedding = self.embed(encoder_input_tokens)
+        state_embedding = self.embed(
+            jnp.zeros_like(encoder_input_tokens).astype(jnp.int32)
+        )
+        state_embedding = state_embedding * jnp.expand_dims(
+            encoder_input_tokens, axis=-1
+        )
         input_embedding = state_embedding
 
         input_embedding = self.get_embedding(batch_size, input_embedding)

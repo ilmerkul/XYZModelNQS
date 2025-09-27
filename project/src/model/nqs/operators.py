@@ -39,31 +39,22 @@ def get_model_netket_op(
 
     ham = nk.operator.LocalOperator(hilbert, dtype=dtype)
 
-    if lam != -1:
+    if j != 0:
         ham += sum(
-            [
-                j * (1 + lam) * sigmax(hilbert, i) * sigmax(hilbert, i + 1)
-                for i in range(n - 1)
-            ]
+            [j * sigmax(hilbert, i) * sigmax(hilbert, i + 1) for i in range(n - 1)]
         )
 
-    if lam != 1:
+    if lam != 0:
         ham += sum(
-            [
-                j * (1 - lam) * sigmay(hilbert, i) * sigmay(hilbert, i + 1)
-                for i in range(n - 1)
-            ]
+            [lam * sigmay(hilbert, i) * sigmay(hilbert, i + 1) for i in range(n - 1)]
         )
-
-    if h != 0:
-        ham += sum([h * sigmaz(hilbert, i) for i in range(n)])
 
     if gamma != 0:
         ham += sum(
-            [
-                j * gamma * sigmaz(hilbert, i) * sigmaz(hilbert, i + 1)
-                for i in range(n - 1)
-            ]
+            [gamma * sigmaz(hilbert, i) * sigmaz(hilbert, i + 1) for i in range(n - 1)]
         )
+
+    if h != 0:
+        ham += sum([h * sigmax(hilbert, i) for i in range(n)])
 
     return ham

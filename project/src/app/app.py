@@ -16,6 +16,7 @@ class App:
             lam=args.lam,
             gamma=args.gamma,
             sampler="transformer",
+            preconditioner=True,
         )
         self.model = ModelNQS(cfg=self.model_config)
 

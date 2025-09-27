@@ -45,7 +45,7 @@ class PQC(nn.Module):
         f1 = self._quantum_circuit(self.q_x1, self.q_z1, c1, x)
         f2 = self._quantum_circuit(self.q_x2, self.q_z2, c2, x)
 
-        return f1 + 1j * f2
+        return jnp.log(jnn.sigmoid(f1)) + 1j * jnp.pi * jnp.tanh(f2)
 
     def _make_circuit(self):
         dev = qml.device("default.qubit", wires=self.N_q)

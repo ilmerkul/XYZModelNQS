@@ -9,9 +9,8 @@ FROM ${OS}:${VERSION_OS}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Moscow
 
-ARG CONTAINER_WORKDIR="/home/ubuntu/project"
-ENV CONTAINER_WORKDIR=${CONTAINER_WORKDIR}
-ENV VENV_PATH="${CONTAINER_WORKDIR}/.venv"
+ENV CONTAINER_WORKDIR /home/ubuntu/project
+ENV VENV_PATH="${CONTAINER_WORKDIR}/venv"
 
 ENV JAX_CUDA_CUDNN="cuda"
 
@@ -28,11 +27,13 @@ RUN apt-get install -y htop \
                         python3-dev \
                         python3-full
 
-COPY ./docker/install.sh /tmp/install.sh
-RUN chmod +x /tmp/install.sh
-RUN ./tmp/install.sh ${VENV_PATH}
-
 WORKDIR ${CONTAINER_WORKDIR}
+COPY ./docker/install.sh /tmp/install.sh
+COPY ./poetry.lock .
+COPY ./pyproject.toml .
+RUN chmod +x /tmp/install.sh
+RUN /tmp/install.sh ${VENV_PATH}
+
 VOLUME ${CONTAINER_WORKDIR}
 
 CMD [ "/bin/bash" ]

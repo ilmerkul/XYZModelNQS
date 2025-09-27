@@ -23,7 +23,6 @@ echo "Логи сборки будут записаны в: $BUILD_LOG"
 # Сборка образа
 if ! docker image build -f "$DOCKERFILE" \
   --tag "$DOCKER_IMAGE" \
-  --build-arg CONTAINER_WORKDIR="$CONTAINER_WORKDIR" \
   . > "$BUILD_LOG" 2>&1; then
   echo "Ошибка сборки образа! Проверьте лог: $BUILD_LOG"
   exit 1

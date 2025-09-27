@@ -1,6 +1,7 @@
 import flax.linen as nn
 import jax
 from jax import lax
+from jax import numpy as jnp
 
 from ..feedforward.sym import SymmModel
 from ..graph.GCNN import GCNN
@@ -25,19 +26,15 @@ class PhaseTransformer(nn.Module):
         n_chains: int = 16,
         key: jax.Array = None,
     ):
-        print(
-            generate,
-            x,
-        )
+
         σ, log_prob = self.transformer(x, generate=generate, n_chains=n_chains, key=key)
-        print(σ, σ.shape)
 
         if not generate:
             # g = self.gccn(x)
-            g = self.symm_model(x)
+            # g = self.symm_model(x)
 
-            phi = self.pqc(x)
+            # phi = self.pqc(x)
 
-            return 0.5 * log_prob + lax.complex(0.0, g) + phi
+            return 0.5 * log_prob  # + 1j * jnp.pi * lax.tanh(g) #+ phi
 
         return σ, log_prob

@@ -13,11 +13,14 @@ from ..exact import (
 
 
 class Results:
-    def __init__(self, h: float, j: float, n: int, type: str):
+    def __init__(self, h: float, j: float, n: int):
         self.h = h
         self.j = j
         self.n = n
-        self.type = type
+        self.type = self._get_type(h, j)
+
+    def _get_type(self, h, j):
+        return "other"
 
     def analytical(self):
         """Analytical solution"""
@@ -95,20 +98,23 @@ class Results:
         )
 
     def header(self) -> str:
+        header = ""
         if self.type == "xy":
-            return (
+            header = (
                 "n_spins,h,j,"
                 + ",".join([f"estimated_{v}" for v in self.res.keys()])
                 + "\n"
             )
-        return (
-            "n_spins,h,j,"
-            + ",".join(
-                [f"analytical_{v}" for v in self.ares.keys()]
-                + [f"estimated_{v}" for v in self.res.keys()]
+        else:
+            header = (
+                "n_spins,h,j,"
+                + ",".join(
+                    [f"analytical_{v}" for v in self.ares.keys()]
+                    + [f"estimated_{v}" for v in self.res.keys()]
+                )
+                + "\n"
             )
-            + "\n"
-        )
+        return header
 
     def get_spins(self) -> str:
         return ",".join([f"{v}:.5f" for v in self.spins])

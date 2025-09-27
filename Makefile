@@ -20,7 +20,11 @@ clean:
 
 install:
 	@echo "Install packages"
-	@./docker/install.sh
+	@./docker/install.sh $(PROJECT_VENV)
+
+install-dev: install
+	@echo "Install packages"
+	@bash -c "source $(PROJECT_VENV)/bin/activate && pip install -r requirements-dev.txt"
 
 install-gpu: install
 	@pip install --upgrade "jax[cuda110]"==0.2.19 -f https://storage.googleapis.com/jax-releases/jax_releases.html
