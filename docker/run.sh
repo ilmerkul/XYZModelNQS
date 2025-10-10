@@ -11,11 +11,10 @@ if [ -z "$PROJECT_DIR" ] || [ -z "$CONTAINER_WORKDIR" ] || [ -z "$DOCKER_IMAGE" 
 fi
 
 # Запуск контейнера
-docker run -it \
+#--volume="$PROJECT_DIR/poetry.lock:$CONTAINER_WORKDIR/poetry.lock" \
+docker run --rm --gpus all -it \
   --env CUDA_VISIBLE_DEVICES=-1 \
   --env CONTAINER_WORKDIR=$CONTAINER_WORKDIR \
   --volume="$PROJECT_DIR/project:$CONTAINER_WORKDIR/project" \
-  --volume="$PROJECT_DIR/venv:$CONTAINER_WORKDIR/venv" \
-  --volume="$PROJECT_DIR/poetry.lock:$CONTAINER_WORKDIR/poetry.lock" \
   --volume="$PROJECT_DIR/pyproject.toml:$CONTAINER_WORKDIR/pyproject.toml" \
   "$DOCKER_IMAGE"

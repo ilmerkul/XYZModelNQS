@@ -1,15 +1,14 @@
 from functools import partial
-from typing import Any
 
 import jax
 import jax.numpy as jnp
 import netket as nk
 from flax import linen as nn
-from netket.jax import apply_chunked, dtype_real
+from netket.jax import dtype_real
 from netket.jax.sharding import shard_along_axis
 from netket.sampler.base import Sampler, SamplerState
-from netket.utils.struct import dataclass
 from netket.utils.types import PyTree
+
 from src.model.NN import Transformer, TransformerConfig
 
 

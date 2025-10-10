@@ -23,10 +23,10 @@ class TransformerConfig:
     length: int = 10
 
     # Number of embedding dim
-    features: int = 16
+    features: int = 8
 
     # Number of heads in multihead attention
-    num_heads: int = 1
+    num_heads: int = 2
 
     # Bias
     use_bias: bool = False
@@ -334,7 +334,7 @@ class Encoder(nn.Module):
     @nn.compact
     def __call__(
         self, input_embedding: jax.Array, encoder_mask: jax.Array, kv_cache: jax.Array
-    ) -> (jax.Array, jax.Array):
+    ) -> Tuple[jax.Array, jax.Array]:
         cfg = self.config
 
         # Encoder layer

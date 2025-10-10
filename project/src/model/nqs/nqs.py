@@ -3,82 +3,102 @@ from pathlib import Path
 from typing import Optional
 
 import jax
-import jax.random
+import jax.random as jrnd
 import netket as nk
 import optax
 from flax.core import freeze, unfreeze
-from jax import numpy as jnp
+import jax.numpy as jnp
 from netket.optimizer import identity_preconditioner
-from src.model.NN import CNN, GCNN, CNNConfig, PhaseTransformer, TransformerConfig
-from src.model.NN.feedforward.transfer_learning import NN
-from src.model.sampler import TransformerSampler
-from src.result.struct import Results
 from tqdm import tqdm
 
-from .operators import get_model_netket_op, get_spin_operators
+from src.model.NN import (
+    CNN,
+    GCNN,
+    CNNConfig,
+    NNType,
+    PhaseTransformer,
+    TransformerConfig,
+)
+from src.model.NN.feedforward.transfer_learning import NN
+from src.model.optimizer import NQSOptimizer
+from src.model.sampler import SamplerType, TransformerSampler
+from src.result.struct import Result
+from src.model.struct import ChainConfig
+
+from src.model.nqs.operator import get_model_netket_op
 
 
 @dataclass
 class ModelNQSConfig:
-    nn: str = "phase_transformer"
-    sampler: str = "transformer"
-    optimizer: str = "adam"
+    chain: ChainConfig = None
+    nn: str = NNType.PHASE_TRANSFORMER
+    sampler: str = SamplerType.METROPOLIS
+    optimizer: str = NQSOptimizer.ADAM_ZERO_PQC
     pbc: bool = False
-    spin: float = 1 / 2
-    gamma: float = 1.0
-    lam: float = 1.0
-    j: float = 1.0
-    n: int = 10
-    h: float = 1.0
+    n_iter: int = 100
     n_chains: int = 16
-    lr: float = 1e-3
+    lr: float = 5e-4
     min_n_samples: int = 200
     scale_n_samples: int = 45
     preconditioner: bool = False
     dtype: jnp.dtype = jnp.float64
+    rnd_seed: int = 42
+    sr_diag_shift: float = 0.01
 
 
 class ModelNQS:
     def __init__(self, cfg: ModelNQSConfig):
         self.cfg = cfg
-        self.graph = nk.graph.Chain(length=self.cfg.n, pbc=self.cfg.pbc)
-        self.hilbert = nk.hilbert.Spin(N=self.cfg.n, s=self.cfg.spin)
+        self.graph = nk.graph.Chain(length=self.cfg.chain.n, pbc=self.cfg.pbc)
+        self.hilbert = nk.hilbert.Spin(N=self.cfg.chain.n, s=self.cfg.chain.spin)
 
+        self._set_sampler()
+
+        self._init_state()
+
+    def _init_state(self):
         self._set_ops()
 
         self._set_machine()
-
-        self._set_sampler()
 
         self._set_optimizer()
 
         self._set_vmc()
 
+    def _set_ops(self):
+        self.ham = get_model_netket_op(
+            self.cfg.chain,
+            self.hilbert,
+        )
+        self.ham_jax = self.ham.to_pauli_strings().to_jax_operator()
+
     def _set_machine(self):
-        if self.cfg.nn == "phase_transformer":
+        if self.cfg.nn == NNType.PHASE_TRANSFORMER:
             self.nn = PhaseTransformer(
                 TransformerConfig(
-                    length=self.cfg.n,
+                    length=self.cfg.chain.n,
                     training=False,
                     dtype=self.cfg.dtype,
                     symm=True,
                     automorphisms=self.graph.automorphisms(),
                 )
             )
-        elif self.cfg.nn == "cnn":
+        elif self.cfg.nn == NNType.CNN:
             self.nn = CNN(CNNConfig())
-        elif self.cfg.nn == "gcnn":
-            self.nn = GCNN(self.cfg.n)
+        elif self.cfg.nn == NNType.GCNN:
+            self.nn = GCNN(self.cfg.chain.n)
         else:
             raise ValueError("error nn")
 
     def _set_sampler(self):
-        if self.cfg.sampler == "transformer":
+        if self.cfg.sampler == SamplerType.TRANSFORMER:
             self.sampler = TransformerSampler(self.hilbert)
-        elif self.cfg.sampler == "metropolis":
+        elif self.cfg.sampler == SamplerType.METROPOLIS:
             self.sampler = nk.sampler.MetropolisSampler(
                 self.hilbert,
-                rule=nk.sampler.rules.ExchangeRule(graph=self.graph, d_max=3),
+                rule=nk.sampler.rules.ExchangeRule(
+                    graph=self.graph, d_max=self.cfg.chain.n // 2
+                ),
                 n_chains=self.cfg.n_chains,
                 dtype=jnp.float64,
             )
@@ -86,110 +106,18 @@ class ModelNQS:
             raise ValueError("error sampler")
 
     def _set_optimizer(self):
-        lr = self.cfg.lr
-
-        def zero_grads():
-            def init_fn(_):
-                return ()
-
-            def update_fn(updates, state, params=None):
-                return jax.tree_map(jnp.zeros_like, updates), ()
-
-            return optax.GradientTransformation(init_fn, update_fn)
-
-        def map_nested_fn(fn):
-            def map_fn(nested_dict):
-                p = {
-                    k: (map_fn(v) if isinstance(v, dict) else fn(k, v))
-                    for k, v in nested_dict.items()
-                }
-                return p
-
-            return map_fn
-
-        label_fn = map_nested_fn(lambda k, _: "tr" if k.startswith("tr") else "pqc")
-        self.optimizer = optax.multi_transform(
-            {
-                "tr": optax.adam(
-                    learning_rate=optax.join_schedules(
-                        [
-                            optax.constant_schedule(lr * 10),
-                            optax.exponential_decay(
-                                init_value=lr * 10,
-                                transition_steps=10,
-                                decay_rate=0.8,
-                                end_value=lr,
-                            ),
-                        ],
-                        boundaries=[25],
-                    )
-                ),
-                "pqc": zero_grads(),
-            },
-            label_fn,
-        )
-        if self.cfg.optimizer == "adam":
-            self.optimizer = nk.optimizer.Adam(1e-3)
-        elif self.cfg.optimizer == "adam_cos":
-            self.optimizer = optax.adam(
-                learning_rate=optax.cosine_decay_schedule(
-                    init_value=1e-2, decay_steps=10
-                )
+        self.optimizer = NQSOptimizer.get_optimizer(self.cfg.optimizer, self.cfg.lr)
+        if self.cfg.nn == NNType.PHASE_TRANSFORMER:
+            self.optimizer_pqc = NQSOptimizer.get_optimizer(
+                NQSOptimizer.ADAM_PQC, self.cfg.lr
             )
-        elif self.cfg.optimizer == "adam_exp":
-            self.optimizer = optax.adam(
-                learning_rate=optax.join_schedules(
-                    [
-                        optax.constant_schedule(lr * 10),
-                        optax.exponential_decay(
-                            init_value=lr * 10,
-                            transition_steps=40,
-                            decay_rate=0.8,
-                            end_value=lr,
-                        ),
-                    ],
-                    boundaries=[25],
-                )
-            )
-        elif self.cfg.optimizer == "sgd_lin_exp":
-            self.optimizer = optax.sgd(
-                learning_rate=optax.join_schedules(
-                    [
-                        optax.linear_schedule(
-                            init_value=lr, end_value=lr * 10, transition_steps=10
-                        ),
-                        optax.constant_schedule(lr * 10),
-                        optax.exponential_decay(
-                            init_value=lr * 10,
-                            transition_steps=35,
-                            decay_rate=0.8,
-                            end_value=lr / 10,
-                        ),
-                    ],
-                    boundaries=[10, 15],
-                )
-            )
-        else:
-            self.optimizer = optax.sgd(
-                learning_rate=optax.exponential_decay(
-                    init_value=1e-3,
-                    transition_steps=10,
-                    decay_rate=0.9,
-                    transition_begin=50,
-                    end_value=1e-4,
-                ),
-                momentum=0.9,
-                nesterov=True,
-            )
-        if self.cfg.nn == "phase_transformer":
-            self.optimizer_pqc = nk.optimizer.Adam(1e-3)
 
     def _set_vmc(self):
         self.n_samples = max(
-            [self.cfg.min_n_samples, self.cfg.n * self.cfg.scale_n_samples]
+            [self.cfg.min_n_samples, self.cfg.chain.n * self.cfg.scale_n_samples]
         )
 
-        if self.cfg.nn == "phase_transformer":
+        if self.cfg.nn == NNType.PHASE_TRANSFORMER:
             self.mcstate = nk.vqs.MCState(
                 sampler=self.sampler,
                 n_samples=self.n_samples,
@@ -204,7 +132,9 @@ class ModelNQS:
             )
         sr = identity_preconditioner
         if self.cfg.preconditioner:
-            sr = nk.optimizer.SR(diag_shift=0.01, solver_restart=False)
+            sr = nk.optimizer.SR(
+                diag_shift=self.cfg.sr_diag_shift, solver_restart=False
+            )
 
         self.vmc = nk.driver.VMC(
             hamiltonian=self.ham,
@@ -214,94 +144,55 @@ class ModelNQS:
         )
 
     def set_h(self, h: float):
-        self.cfg.h = h
-        self._set_ops()
+        self.cfg.chain.h = h
+        self._init_state()
 
-    def _set_ops(self):
-        self.ham = get_model_netket_op(
-            self.cfg.n,
-            self.cfg.j,
-            self.cfg.h,
-            self.cfg.lam,
-            self.cfg.gamma,
-            self.hilbert,
-        )
-        self.ham_jax = self.ham.to_pauli_strings().to_jax_operator()
-
-        ops = get_spin_operators(self.cfg.n, self.hilbert)
-        ops["e"] = self.ham
-        self.ops = ops
-
-    def train(self, n_iter: int = 500):
+    def train(self):
         logger = nk.logging.RuntimeLog()
-        assert self.ops is not None
 
-        if self.cfg.nn == "phase_transformer":
+        if self.cfg.nn == NNType.PHASE_TRANSFORMER:
             self.vmc.run(
-                n_iter=n_iter // 2,
+                n_iter=self.cfg.n_iter // 2,
                 out=logger,
                 callback=lambda *x: True,
             )
             self.vmc.optimizer = self.optimizer_pqc
             self.vmc.run(
-                n_iter=n_iter // 2,
+                n_iter=self.cfg.n_iter // 2,
                 out=logger,
                 callback=lambda *x: True,
             )
         else:
             self.vmc.run(
-                n_iter=n_iter,
+                n_iter=self.cfg.n_iter,
                 out=logger,
                 callback=lambda *x: True,
             )
 
-    def get_hilbert(self):
-        return self.hilbert
-
-    def get_j(self):
-        return self.j
-
-    def get_h(self):
-        return self.h
-
-    def get_analytical(self) -> Results:
-        res = Results(self.cfg.h, self.cfg.j, self.cfg.n)
+    def get_analytical(self) -> Result:
+        res = Result(self.cfg.chain)
         res.analytical()
 
         return res
 
-    def get_results(
+    def get_result(
         self, min_n_samples: int = 6000, scale_n_samples: int = 200
-    ) -> Results:
+    ) -> Result:
         # train = self.nn.config.training
         # self.nn.config.training = False
 
-        n_samples = max([min_n_samples, self.cfg.n * scale_n_samples])
+        n_samples = max([min_n_samples, self.cfg.chain.n * scale_n_samples])
         chain_length = int(n_samples / self.cfg.n_chains)
         discard_by_chain = int(chain_length * 0.3)
         self.mcstate.n_samples = n_samples
         self.mcstate.sample(
             chain_length=chain_length, n_discard_per_chain=discard_by_chain
         )
-        ops_vals = self.vmc.estimate(self.ops)
 
+        ops = Result.get_spin_operators(self.cfg.chain, self.hilbert)
+        ops_vals = self.vmc.estimate(ops)
         res = self.get_analytical()
-
-        res.update(
-            energy=jnp.real(ops_vals["e"].mean),
-            var=jnp.real(ops_vals["e"].variance),
-            spins=jnp.array(
-                [
-                    jnp.real(val.mean)
-                    for op, val in ops_vals.items()
-                    if op.startswith("s_")
-                ]
-            ),
-            xx=jnp.real(ops_vals["xx"].mean),
-            yy=jnp.real(ops_vals["yy"].mean),
-            zz=jnp.real(ops_vals["zz"].mean),
-            zz_mid=jnp.real(ops_vals["zz_mid"].mean),
-        )
+        res.update(Result.ops_vals_to_res_data(ops_vals))
 
         self.mcstate.n_samples = self.n_samples
         # self.nn.config.training = train
@@ -319,19 +210,19 @@ class ModelNQS:
         generate: bool = False,
         **kwargs
     ):
-        if self.cfg.nn == "phase_transformer":
+        if self.cfg.nn == NNType.PHASE_TRANSFORMER:
             return self.nn.apply(
                 params,
                 variables,
                 generate=generate,
                 n_chains=batch_dim,
-                rngs={"dropout": jax.random.PRNGKey(42)},
+                rngs={"dropout": jrnd.PRNGKey(self.cfg.rnd_seed)},
                 mutable=mutable,
                 **kwargs
             )
-        elif self.cfg.nn == "cnn":
+        elif self.cfg.nn == NNType.CNN:
             return self.nn.apply(params, variables)
-        elif self.cfg.nn == "gcnn":
+        elif self.cfg.nn == NNType.GCNN:
             return self.nn.apply(params, variables)
         else:
             raise ValueError("error apply function")
@@ -346,7 +237,7 @@ class ModelNQS:
 
 
 class ModelCustomNQS(ModelNQS):
-    def __init__(self, cfg):
+    def __init__(self, cfg: ModelNQSConfig):
         super().__init__(cfg)
 
     def to_array(self, parameters):
@@ -450,9 +341,9 @@ class ModelCustomNQS(ModelNQS):
     def train(self, n_iter: int = 100):
         chain_length = 1000 // self.sampler.n_chains
 
-        key = jax.random.PRNGKey(42)
+        key = jrnd.PRNGKey(42)
         inp = jnp.ones(16 * self.n)
-        inp = inp.at[jax.random.randint(key, (16, self.n), 0, 16 * self.n)].set(-1)
+        inp = inp.at[jrnd.randint(key, (16, self.n), 0, 16 * self.n)].set(-1)
         inp = inp.reshape(16, self.n)
         init_rngs = {"params": key, "dropout": key}
         parameters = self.nn.init(init_rngs, inp)
@@ -487,13 +378,13 @@ class ModelCustomNQS(ModelNQS):
 
 
 class ModelTLNQS(ModelNQS):
-    def __init__(self, cfg):
+    def __init__(self, cfg: ModelNQSConfig):
         super().__init__(cfg)
 
     def set_machine(self, base_weights: Optional[Path] = None):
         nn = NN(self.n, alpha=5)
 
-        variables = nn.init(PRNGKey(0), jnp.ones(self.n))
+        variables = nn.init(jrnd.PRNGKey(self.cfg.rnd_seed), jnp.ones(self.cfg.n))
         if base_weights is not None:
             kernel = jnp.load(base_weights.joinpath("kernel.npy"))
             bias = jnp.load(base_weights.joinpath("bias.npy"))

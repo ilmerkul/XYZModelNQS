@@ -1,10 +1,10 @@
-ARG CUDA="12.8.1"
+ARG CUDA="13.0.1"
 ARG TAG="devel"
 ARG OS="ubuntu"
 ARG VERSION_OS="24.04"
 
-#FROM nvidia/cuda:${CUDA}-cudnn-${TAG}-${OS}${VERSION_OS}
-FROM ${OS}:${VERSION_OS}
+FROM nvidia/cuda:${CUDA}-cudnn-${TAG}-${OS}${VERSION_OS}
+#FROM ${OS}:${VERSION_OS}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Moscow
@@ -14,7 +14,6 @@ ENV VENV_PATH="${CONTAINER_WORKDIR}/venv"
 
 ENV JAX_CUDA_CUDNN="cuda"
 
-# Install essentials
 RUN apt-get update \
 	&& apt-get upgrade -y \
 	&& apt-get install -y \
@@ -29,7 +28,7 @@ RUN apt-get install -y htop \
 
 WORKDIR ${CONTAINER_WORKDIR}
 COPY ./docker/install.sh /tmp/install.sh
-COPY ./poetry.lock .
+#COPY ./poetry.lock .
 COPY ./pyproject.toml .
 RUN chmod +x /tmp/install.sh
 RUN /tmp/install.sh ${VENV_PATH}

@@ -7,8 +7,9 @@ import numpy as np
 base_prj_path = Path(__file__).parent.parent
 sys.path.append(str(base_prj_path.absolute()))
 
-from main import check_bad_params
 from python.ExactAnalytics import get_ellist
+
+from main import check_bad_params
 
 plt.style.use("ggplot")
 plt.rc("text", usetex=True)

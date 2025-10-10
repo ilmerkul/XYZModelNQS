@@ -2,79 +2,91 @@ import logging
 from pathlib import Path
 
 import numpy as np
+
+from src.model.NN import NNType
 from src.model.nqs import ModelNQS, ModelNQSConfig
+from src.model.optimizer import NQSOptimizer
+from src.model.sampler import SamplerType
+from src.result.struct import Result
+from src.model.struct import ChainConfig
 
 prj_root = Path(__file__).parent.parent.parent.absolute()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 
 class App:
     def __init__(self, args):
-        self.model_config = ModelNQSConfig(
-            n=args.len,
-            j=args.j,
+        self.args = args
+        chain_cfg = ChainConfig(n=10 if args.len is None else args.len,
+            j=-1 if args.j is None else args.j,
             h=0.0 if args.h is None else args.h,
-            lam=args.lam,
-            gamma=args.gamma,
-            sampler="transformer",
+            lam=0.5 if args.lam is None else args.lam,
+            gamma=1 if args.gamma is None else args.gamma,)
+        self.model_config = ModelNQSConfig(
+            chain = chain_cfg,
+            nn=NNType.PHASE_TRANSFORMER,
+            optimizer=NQSOptimizer.ADAM_ZERO_PQC,
+            n_iter=100,
+            lr=5e-4,
+            sampler=SamplerType.METROPOLIS,
             preconditioner=True,
         )
         self.model = ModelNQS(cfg=self.model_config)
 
-        self.path_data = args.path_data
-        self.train = args.train
+        self.path_data = "data"
+        if args.path_data is not None:
+            self.path_data = args.path_data
+        self.train = "default"
+        if args.train is not None:
+            self.train = args.train
 
     def run(self):
-        report_file_name = f"report_n{self.model_config.n}_j{self.model_config.j}_h{self.model_config.h}_lam{self.model_config.lam}_gamma{self.model_config.gamma}.csv"
+        report_file_name = f"report_n{self.model_config.chain.n}_j{self.model_config.chain.j}_h{self.model_config.chain.h}_lam{self.model_config.chain.lam}_gamma{self.model_config.chain.gamma}.csv"
         report_file = prj_root.joinpath(self.path_data).joinpath(report_file_name)
         report_file.touch()
 
-        if self.model_config.h is None:
-            h_rng = np.linspace(0.0, 1.5, 100)
+        if self.args.h is None:
+            h_min = 0.0 if self.args.h_min is None else self.args.h_min
+            h_max = 1.5 if self.args.h_max is None else self.args.h_max
+            h_n = 100 if self.args.h_n is None else self.args.h_n
+            h_rng = np.linspace(h_min, h_max, h_n)
         else:
             h_rng = np.array([self.model_config.h])
 
-        for i, h in enumerate(h_rng):
-            last_h = -1
-            with report_file.open("r") as file:
-                lines = file.readlines()
+        with report_file.open("r+") as file:
+            lines = file.readlines()
 
-                if len(lines) > 1:
-                    last = lines[-1]
-                    last_h = float(last.split(",")[1])
+            if len(lines) == 0:
+                file.writelines([Result.header()])
 
-            if h <= last_h:
+        file_h = set()
+        with report_file.open("r") as file:
+            lines = file.readlines()
+
+            if len(lines) > 1:
+                file_h = set(map(lambda line: float(line.split(",")[1]), lines[1:]))
+
+        for h in h_rng:
+            if h in file_h:
                 logging.info(f"skip {h}")
                 continue
 
             self.model.set_h(h)
 
-            exact = self.model.get_analytical()
-            logging.info(
-                f"Run for h={h:.4f}.\t" f"Analytical energy: {exact.exact():.6f}"
-            )
+            # exact = self.model.get_analytical()
+            logging.info(f"Run for h={h:.4f}.\t")
 
             self.model.train()
-            res = self.model.get_results()
+            res: Result = self.model.get_result()
 
-            msg = (
-                f"Results estimated (analytical):\n\t"
-                f"Energy:\t{res.res['e']:.6f}({res.ares['e']:.6f})\n\t"
-            )
-            msg += f"ZZ:\t{res.res['zz']:.6f}({res.ares['zz']:.6f})\n\t"
-            msg += f"Magnetization:\t{res.res['m']:.6f}({res.ares['m']:.6f})\n"
+            msg = "Results:\n"
+            for res_k, res_v in res.res.items():
+                msg += f"{res_k}: {res_v}\n"
             logging.info(msg)
 
-            if i == 0:
-                with report_file.open("a") as file:
-                    file.writelines(
-                        [
-                            res.header(),
-                        ]
-                    )
-
             with report_file.open("a") as file:
-                file.writelines(
-                    [
-                        res.row(),
-                    ]
-                )
+                file.writelines([res.row()])

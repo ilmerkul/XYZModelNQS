@@ -9,6 +9,7 @@ from .transformer.modelBasedTransformer import (
 )
 from .transformer.phaseTransformer import PhaseTransformer
 from .transformer.transformer import Transformer, TransformerConfig
+from .type import NNType
 
 __all__ = [
     "CNN",
@@ -22,4 +23,5 @@ __all__ = [
     "TransformerConfig",
     "PhaseTransformer",
     "GCNN",
+    "NNType",
 ]

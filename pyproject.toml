@@ -1,17 +1,18 @@
-[tool.poetry]
+[project]
 name = "xyzmodelnqs"
 version = "0.1.0"
-description = "Magnetic spin states."
-authors = ["merkul"]
-license = "MIT"
+description = ""
+authors = [
+    {name = "merkul"}
+]
 readme = "README.md"
-
-[tool.poetry.dependencies]
-python = "^3.11"
-netket = "^3.17.1"
-pennylane = "^0.41.0"
+requires-python = ">=3.12"
+dependencies = [
+    "netket[cuda] (>=3.19.2,<4.0.0)",
+    "pennylane (>=0.40.0,<0.42.4)"
+]
 
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
