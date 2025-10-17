@@ -2,87 +2,59 @@ from typing import Any
 
 import jax
 import netket as nk
-import pennylane as qml
 from flax import linen as nn
 from jax import nn as jnn
 from jax import numpy as jnp
-
-default_kernel_init = jnn.initializers.normal(1e-1)
-default_bias_init = jnn.initializers.normal(1e-4)
 
 
 class PQC(nn.Module):
     hilbert: nk.hilbert.Spin
     N_q: int
     N_l: int
-    kernel_init: Any = default_kernel_init
-    hidden_bias_init: Any = default_bias_init
+    dtype: jnp.dtype
 
     def setup(self):
-        self.q_x1 = self.param(
-            "pqc_q_x1", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        self.theta1 = self.param(
+            "theta1",
+            nn.initializers.uniform(2 * jnp.pi, dtype=self.dtype),
+            (self.N_l, self.N_q, 3),
         )
-        self.q_z1 = self.param(
-            "pqc_q_z1", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        self.theta2 = self.param(
+            "theta2",
+            nn.initializers.uniform(2 * jnp.pi, dtype=self.dtype),
+            (self.N_l, self.N_q, 3),
         )
-        self.c1 = nn.Embed(num_embeddings=1, name="pqc_embedding1", features=self.N_q)
 
-        self.q_x2 = self.param(
-            "pqc_q_x2", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        self.w1 = self.param(
+            "w1", nn.initializers.normal(1e-4, dtype=self.dtype), (self.N_q,)
         )
-        self.q_z2 = self.param(
-            "pqc_q_z2", nn.initializers.xavier_uniform(), (self.N_l + 1, self.N_q)
+        self.w2 = self.param(
+            "w2", nn.initializers.normal(1e-4, dtype=self.dtype), (self.N_q,)
         )
-        self.c2 = nn.Embed(num_embeddings=1, name="pqc_embedding2", features=self.N_q)
-
-        self.circuit = self._make_circuit()
 
     @nn.compact
     def __call__(self, x):
-        c1 = self.c1((jnp.zeros(shape=(1,), dtype=jnp.int32)))
-        c2 = self.c2((jnp.zeros(shape=(1,), dtype=jnp.int32)))
+        s = (x > 0).astype(self.dtype)
 
-        f1 = self._quantum_circuit(self.q_x1, self.q_z1, c1, x)
-        f2 = self._quantum_circuit(self.q_x2, self.q_z2, c2, x)
+        f1 = self._jax_quantum_circuit(s, self.theta1, self.w1)
+        f2 = self._jax_quantum_circuit(s, self.theta2, self.w2)
 
-        return jnp.log(jnn.sigmoid(f1)) + 1j * jnp.pi * jnp.tanh(f2)
+        return jnp.log(jnn.sigmoid(f1)) + 1j * 2 * jnp.pi * jnn.sigmoid(f2)
 
-    def _make_circuit(self):
-        dev = qml.device("default.qubit", wires=self.N_q)
-
-        @jax.jit
-        @qml.qnode(dev, interface="jax", diff_method="parameter-shift")
-        def circuit(state, q_x, q_z):
-            state = jnp.pi * state
-            for wire in range(self.N_q):
-                angle = jnp.take(state, wire)
-                qml.RY(angle, wires=wire)
+    def _jax_quantum_circuit(self, states, theta, w):
+        def process_single_state(state):
+            angles = jnp.pi * state
 
             for layer in range(self.N_l):
-                for wire in range(self.N_q):
-                    qml.RX(q_x[layer, wire], wires=wire)
-                    qml.RZ(q_z[layer, wire], wires=wire)
+                layer_angles = theta[layer]
+                angles = angles + layer_angles[:, 0]
+                angles = jnp.sin(angles) * layer_angles[:, 1]
+                angles = angles + layer_angles[:, 2]
 
-                for wire in range(self.N_q - 1):
-                    qml.CNOT(wires=[wire, wire + 1])
+                if layer < self.N_l - 1:
+                    angles = angles + 0.1 * jnp.roll(angles, 1)
 
-            for wire in range(self.N_q):
-                qml.RX(q_x[-1, wire], wires=wire)
-                qml.RZ(q_z[-1, wire], wires=wire)
+            expectations = jnp.tanh(angles)
+            return jnp.sum(expectations * w)
 
-            return [qml.expval(qml.PauliZ(wire)) for wire in range(self.N_q)]
-
-        return circuit
-
-    def _quantum_circuit(self, q_x, q_z, c, s):
-        s = (s > 0).astype(jnp.int32)
-
-        expectations = jnp.zeros((s.shape[0],))
-
-        for i in range(s.shape[0]):
-            r = jnp.array(self.circuit(s[i, :], q_x, q_z))
-            r = jnp.sum(c * r)
-
-            expectations.at[i].set(r)
-
-        return expectations
+        return jax.vmap(process_single_state)(states)

@@ -1,52 +1,49 @@
 import logging
-from pathlib import Path
+import pprint
 
+import jax
 import numpy as np
 
-from src.model.NN import NNType
+from src.app.config import get_ff_config
 from src.model.nqs import ModelNQS, ModelNQSConfig
-from src.model.optimizer import NQSOptimizer
-from src.model.sampler import SamplerType
 from src.result.struct import Result
-from src.model.struct import ChainConfig
+from src.utils import report_path
 
-prj_root = Path(__file__).parent.parent.parent.absolute()
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.FileHandler("app.log"), logging.StreamHandler()],
 )
+
+jax.config.update("jax_platform_name", "gpu")
+
+print("JAX devices:", jax.devices())
+print("Default device:", jax.default_device)
 
 
 class App:
+    path_data: str = "data/report"
+    save_model_path: str = "data/model"
+    train: str = "default"
+
     def __init__(self, args):
         self.args = args
-        chain_cfg = ChainConfig(n=10 if args.len is None else args.len,
-            j=-1 if args.j is None else args.j,
-            h=0.0 if args.h is None else args.h,
-            lam=0.5 if args.lam is None else args.lam,
-            gamma=1 if args.gamma is None else args.gamma,)
-        self.model_config = ModelNQSConfig(
-            chain = chain_cfg,
-            nn=NNType.PHASE_TRANSFORMER,
-            optimizer=NQSOptimizer.ADAM_ZERO_PQC,
-            n_iter=100,
-            lr=5e-4,
-            sampler=SamplerType.METROPOLIS,
-            preconditioner=True,
+        self.model_config: ModelNQSConfig = get_ff_config(
+            args=args, save_model_path=self.save_model_path
         )
+        pprint.pprint(self.model_config)
+
         self.model = ModelNQS(cfg=self.model_config)
 
-        self.path_data = "data"
         if args.path_data is not None:
             self.path_data = args.path_data
-        self.train = "default"
+
         if args.train is not None:
             self.train = args.train
 
     def run(self):
-        report_file_name = f"report_n{self.model_config.chain.n}_j{self.model_config.chain.j}_h{self.model_config.chain.h}_lam{self.model_config.chain.lam}_gamma{self.model_config.chain.gamma}.csv"
-        report_file = prj_root.joinpath(self.path_data).joinpath(report_file_name)
+        report_file = report_path(self.model_config.chain, self.path_data)
         report_file.touch()
 
         if self.args.h is None:
@@ -77,7 +74,6 @@ class App:
 
             self.model.set_h(h)
 
-            # exact = self.model.get_analytical()
             logging.info(f"Run for h={h:.4f}.\t")
 
             self.model.train()

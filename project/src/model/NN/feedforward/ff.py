@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from typing import Any
 
 import flax.linen as nn
@@ -5,30 +6,45 @@ import netket
 from jax import nn as jnn
 from jax import numpy as jnp
 
-default_kernel_init = jnn.initializers.normal(1e-1)
-default_bias_init = jnn.initializers.normal(1e-4)
+from src.model.struct import ChainConfig
+
+
+@dataclass(frozen=True)
+class FFConfig:
+    chain: ChainConfig
+    dtype: jnp.dtype
+    precision: Any
+    use_bias: bool
+
+    default_kernel_init: Any = field(init=False)
+    default_bias_init: Any = field(init=False)
+    alpha: int = field(init=False)
+
+    def __post_init__(self):
+        default_kernel_init: jnn.initializers.Initializer = jnn.initializers.normal(
+            1e-1, dtype=self.dtype
+        )
+        default_bias_init: jnn.initializers.Initializer = jnn.initializers.normal(
+            1e-4, dtype=self.dtype
+        )
+        alpha = int(self.chain.n**0.5)
+        object.__setattr__(self, "default_kernel_init", default_kernel_init)
+        object.__setattr__(self, "default_bias_init", default_bias_init)
+        object.__setattr__(self, "alpha", alpha)
 
 
 class FF(nn.Module):
-    n: int
-    alpha: int = 4
-    dtype: Any = jnp.complex64
-    precision: Any = None
-    kernel_init: Any = default_kernel_init
-    hidden_bias_init: Any = default_bias_init
-
-    def _get_dense(self, n):
-        return nn.Dense(
-            features=n,
-            dtype=self.dtype,
-            use_bias=True,
-            precision=self.precision,
-            kernel_init=self.kernel_init,
-            bias_init=self.hidden_bias_init,
-        )
+    config: FFConfig
 
     def setup(self):
-        self.dense = self._get_dense(self.n * self.alpha)
+        self.dense = nn.Dense(
+            features=self.config.chain.n * self.config.alpha,
+            dtype=self.config.dtype,
+            use_bias=self.config.use_bias,
+            precision=self.config.precision,
+            kernel_init=self.config.default_kernel_init,
+            bias_init=self.config.default_bias_init,
+        )
 
     @nn.compact
     def __call__(self, x):

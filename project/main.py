@@ -31,6 +31,7 @@ def get_args():
     parser.add_argument("--j", required=False, type=float)
     parser.add_argument("--lam", required=False, type=float)
     parser.add_argument("--gamma", required=False, type=float)
+    parser.add_argument("--spin", required=False, type=float)
     parser.add_argument("--path_data", required=False, type=str)
     parser.add_argument("--train", required=False, type=str)
     args = parser.parse_args()

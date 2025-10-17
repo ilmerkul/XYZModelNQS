@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 
-@dataclass
+
+@dataclass(frozen=True)
 class ChainConfig:
-    spin: float = 1 / 2
-    gamma: float = 1.0
-    lam: float = 1.0
-    j: float = 1.0
-    n: int = 10
-    h: float = 1.0
+    spin: float
+    gamma: float
+    lam: float
+    j: float
+    n: int
+    h: float
+    pbc: bool

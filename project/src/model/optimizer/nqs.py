@@ -14,7 +14,7 @@ class NQSOptimizer:
     ADAM_PQC: str = "adam_pqc"
 
     @staticmethod
-    def get_optimizer(type: str, lr: float):
+    def get_optimizer(type: str, lr: float, n_iter: int):
         if type == NQSOptimizer.ADAM:
             optimizer = nk.optimizer.Adam(lr)
         elif type == NQSOptimizer.ADAM_COS:
@@ -33,7 +33,7 @@ class NQSOptimizer:
                             end_value=lr,
                         ),
                     ],
-                    boundaries=[25],
+                    boundaries=[n_iter // 4],
                 )
             )
         elif type == NQSOptimizer.SGD_LIN_EXP:
@@ -48,10 +48,10 @@ class NQSOptimizer:
                             init_value=lr * 10,
                             transition_steps=35,
                             decay_rate=0.8,
-                            end_value=lr / 10,
+                            end_value=lr,
                         ),
                     ],
-                    boundaries=[10, 15],
+                    boundaries=[n_iter // 8, n_iter // 4],
                 )
             )
         elif type == NQSOptimizer.SGD_EXP:
@@ -60,13 +60,13 @@ class NQSOptimizer:
                     init_value=lr * 10,
                     transition_steps=10,
                     decay_rate=0.9,
-                    transition_begin=50,
+                    transition_begin=n_iter // 4,
                     end_value=lr,
                 ),
                 momentum=0.9,
                 nesterov=True,
             )
-        elif type == NQSOptimizer.ADAM_ZERO_PQC:
+        elif type == NQSOptimizer.ADAM_ZERO_PQC or type == NQSOptimizer.ADAM_PQC:
 
             def zero_grads():
                 def init_fn(_):
@@ -88,27 +88,59 @@ class NQSOptimizer:
                 return map_fn
 
             label_fn = map_nested_fn(lambda k, _: "tr" if k.startswith("tr") else "pqc")
-            optimizer = optax.multi_transform(
-                {
-                    "tr": optax.adam(
-                        learning_rate=optax.join_schedules(
-                            [
-                                optax.constant_schedule(lr * 10),
-                                optax.exponential_decay(
-                                    init_value=lr * 10,
-                                    transition_steps=10,
-                                    decay_rate=0.8,
-                                    end_value=lr,
-                                ),
-                            ],
-                            boundaries=[25],
-                        )
-                    ),
-                    "pqc": zero_grads(),
-                },
-                label_fn,
-            )
-        elif type == NQSOptimizer.ADAM_PQC:
-            optimizer = nk.optimizer.Adam(lr)
+            if type == NQSOptimizer.ADAM_ZERO_PQC:
+                optimizer = optax.multi_transform(
+                    {
+                        "tr": optax.adam(
+                            learning_rate=optax.join_schedules(
+                                [
+                                    optax.linear_schedule(
+                                        init_value=lr,
+                                        end_value=lr * 10,
+                                        transition_steps=10,
+                                    ),
+                                    optax.constant_schedule(lr * 10),
+                                    optax.exponential_decay(
+                                        init_value=lr * 10,
+                                        transition_steps=35,
+                                        decay_rate=0.8,
+                                        end_value=lr,
+                                    ),
+                                ],
+                                boundaries=[n_iter // 8, n_iter // 4],
+                            )
+                        ),
+                        "pqc": zero_grads(),
+                    },
+                    label_fn,
+                )
+            else:
+                optimizer = optax.multi_transform(
+                    {
+                        "pqc": optax.adam(
+                            learning_rate=optax.join_schedules(
+                                [
+                                    optax.linear_schedule(
+                                        init_value=lr,
+                                        end_value=lr * 10,
+                                        transition_steps=10,
+                                    ),
+                                    optax.constant_schedule(lr * 10),
+                                    optax.exponential_decay(
+                                        init_value=lr * 10,
+                                        transition_steps=35,
+                                        decay_rate=0.8,
+                                        end_value=lr,
+                                    ),
+                                ],
+                                boundaries=[n_iter // 8, n_iter // 4],
+                            )
+                        ),
+                        "tr": zero_grads(),
+                    },
+                    label_fn,
+                )
+        else:
+            raise ValueError()
 
         return optimizer

@@ -1,11 +1,13 @@
-from typing import Dict, Callable
+from dataclasses import asdict, dataclass, fields
+from typing import Callable, Dict
 
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
 import netket as nk
 from netket.operator.spin import sigmax, sigmay, sigmaz
-from src.model.struct import ChainConfig
+
 from src.model.nqs.operator import get_model_netket_op
+from src.model.struct import ChainConfig
 
 from ..exact import (
     analytical_energy,
@@ -16,7 +18,6 @@ from ..exact import (
     get_ellist,
 )
 
-from dataclasses import dataclass, asdict
 
 @dataclass
 class ResultData:
@@ -50,44 +51,74 @@ class Result:
         SIGMA_ZZ_MID_LEN: lambda res_data: res_data.spins.sum() / len(res_data.spins),
     }
 
+    XY_MODEL: str = "xy"
+    XX_MODEL: str = "xx"
+    XYZ_MODEL: str = "xyz"
+    XXX_MODEL: str = "xxx"
+    XXZ_MODEL: str = "xxz"
+    TFI_MODEL: str = "tfi"
+    OTHER_MODEL: str = "other"
+
     def __init__(self, cfg: ChainConfig):
         self.cfg = cfg
         self.data = None
-        self.type = self._get_type()
         self.res = None
         self.ares = None
 
-    def _get_type(self):
-        return "other"
+    @staticmethod
+    def get_type(cfg: ChainConfig):
+        if cfg.gamma == 0.0 and cfg.lam == 0.0:
+            return Result.XX_MODEL
+        elif cfg.gamma == 0.0 and (cfg.lam == 1.0 or cfg.lam == -1.0):
+            return Result.TFI_MODEL
+        elif cfg.gamma == 0.0:
+            return Result.XY_MODEL
+        elif cfg.gamma == 1.0 and cfg.lam == 0.0:
+            return Result.XXX_MODEL
+        elif cfg.gamma != 1.0 and cfg.lam == 0.0:
+            return Result.XXZ_MODEL
+        elif cfg.gamma not in (0.0, 1, 0) and cfg.lam != 0.0:
+            return Result.XXZ_MODEL
+        return Result.OTHER_MODEL
 
-    def analytical(self):
+    @staticmethod
+    def analytical_xy(cfg: ChainConfig) -> Dict[str, float]:
         """Analytical solution"""
-        if self.type != "xy":
-            self.ares = {}
-            return
+        if Result.get_type(cfg) != Result.XY_MODEL:
+            raise ValueError("type is not xy")
 
         ares = {}
-        els = get_ellist(self.cfg.n, self.cfg.h, self.cfg.j)
+        els = get_ellist(cfg.n, cfg.h, cfg.j)
 
-        if jnp.abs(self.cfg.h) > jnp.abs(self.cfg.j):
-            ares[self.ENERGY] = -self.cfg.h * self.cfg.n / 2.0
-            ares[self.SIGMA_XX_LEN] = ares[self.SIGMA_YY_LEN] = 0.0
-            ares[self.SIGMA_ZZ_LEN] = 0.25
-            ares[self.SIGMA_Z_ONE] = ares[self.SIGMA_Z_LAST] = -0.5
-            ares[self.SIGMA_ZZ_MID_LEN] = -0.5
+        if jnp.abs(cfg.h) > jnp.abs(cfg.j):
+            ares[Result.ENERGY] = -cfg.h * cfg.n / 2.0
+            ares[Result.SIGMA_XX_LEN] = ares[Result.SIGMA_YY_LEN] = 0.0
+            ares[Result.SIGMA_ZZ_LEN] = 0.25
+            ares[Result.SIGMA_Z_ONE] = ares[Result.SIGMA_Z_LAST] = -0.5
+            ares[Result.SIGMA_ZZ_MID_LEN] = -0.5
         else:
             l0 = jnp.sum(els < 0)
 
-            ares[self.ENERGY] = analytical_energy(self.cfg.n, self.cfg.h, self.cfg.j, l0)
-            ares[self.SIGMA_XX_LEN] = ares[self.SIGMA_YY_LEN] = analytical_s1sn_xy(self.cfg.n, l0)
-            ares[self.SIGMA_ZZ_LEN] = analytical_s1sn_z(self.cfg.n, l0)
-            ares[self.SIGMA_Z_ONE] = ares[self.SIGMA_Z_LAST] = analytical_s1z(self.cfg.n, l0)
-            ares[self.SIGMA_ZZ_MID_LEN] = analytical_m(self.cfg.n, l0)
+            ares[Result.ENERGY] = analytical_energy(cfg.n, cfg.h, cfg.j, l0)
+            ares[Result.SIGMA_XX_LEN] = ares[Result.SIGMA_YY_LEN] = analytical_s1sn_xy(
+                cfg.n, l0
+            )
+            ares[Result.SIGMA_ZZ_LEN] = analytical_s1sn_z(cfg.n, l0)
+            ares[Result.SIGMA_Z_ONE] = ares[Result.SIGMA_Z_LAST] = analytical_s1z(
+                cfg.n, l0
+            )
+            ares[Result.SIGMA_ZZ_MID_LEN] = analytical_m(cfg.n, l0)
 
-        self.ares = ares
+        return ares
 
-    def exact(self) -> float:
-        return self.ares["e"]
+    @staticmethod
+    def analytical_energy(
+        cfg: ChainConfig, hilbert: nk.hilbert.Spin, order: int = 0
+    ) -> float:
+        H = get_model_netket_op(cfg, hilbert)
+        E_gs = nk.exact.lanczos_ed(H, k=order + 1, compute_eigenvectors=False)
+        en = E_gs[order]
+        return en
 
     def _update(self, res_data: ResultData) -> Dict[str, float]:
         res = dict()
@@ -102,24 +133,21 @@ class Result:
 
     def row(self) -> str:
         row = ",".join(map(lambda x: str(x), asdict(self.cfg).values())) + ","
-        if self.type == "xy":
-            row += ",".join(map(lambda x: f"{x:.5f}", list(self.res.values())))
-        else:
-            row += ",".join(map(lambda x: f"{x:.5f}", list(self.res.values())))
+        row += ",".join(map(lambda x: f"{x:.5f}", list(self.res.values())))
         row += "\n"
         return row
 
     @staticmethod
     def header() -> str:
-        header = ",".join(asdict(ChainConfig()).keys()) + ","
+        header = ",".join(map(lambda field: field.name, fields(ChainConfig))) + ","
         header += ",".join([f"estimated_{v}" for v in Result.TREE_RES.keys()])
         header += "\n"
         return header
-    
+
     @staticmethod
     def get_spin_operators(
-    cfg: ChainConfig, hilbert: nk.hilbert.Spin, dtype: jnp.dtype = jnp.complex128
-) -> Dict[str, nk.operator.LocalOperator]:
+        cfg: ChainConfig, hilbert: nk.hilbert.Spin, dtype: jnp.dtype = jnp.complex128
+    ) -> Dict[str, nk.operator.LocalOperator]:
         """
         Generate measurable operators
         """
@@ -128,17 +156,26 @@ class Result:
         for i in range(cfg.n):
             ops[f"s_{i}"] = sigmaz(hilbert, i, dtype=dtype)
 
-        ops[Result.SIGMA_XX_LEN] = sigmax(hilbert, 0, dtype=dtype) * sigmax(hilbert, cfg.n - 1)
-        ops[Result.SIGMA_YY_LEN] = sigmay(hilbert, 0, dtype=dtype) * sigmay(hilbert, cfg.n - 1)
-        ops[Result.SIGMA_ZZ_LEN] = sigmaz(hilbert, 0, dtype=dtype) * sigmaz(hilbert, cfg.n - 1)
-        ops[Result.SIGMA_ZZ_MID_LEN] = sigmaz(hilbert, 0, dtype=dtype) * sigmaz(hilbert, cfg.n // 2)
+        ops[Result.SIGMA_XX_LEN] = sigmax(hilbert, 0, dtype=dtype) * sigmax(
+            hilbert, cfg.n - 1
+        )
+        ops[Result.SIGMA_YY_LEN] = sigmay(hilbert, 0, dtype=dtype) * sigmay(
+            hilbert, cfg.n - 1
+        )
+        ops[Result.SIGMA_ZZ_LEN] = sigmaz(hilbert, 0, dtype=dtype) * sigmaz(
+            hilbert, cfg.n - 1
+        )
+        ops[Result.SIGMA_ZZ_MID_LEN] = sigmaz(hilbert, 0, dtype=dtype) * sigmaz(
+            hilbert, cfg.n // 2
+        )
         ops[Result.ENERGY] = get_model_netket_op(cfg, hilbert)
 
         return ops
-    
+
     @staticmethod
     def ops_vals_to_res_data(ops_vals: jax.tree) -> ResultData:
-        return ResultData(energy=jnp.real(ops_vals["e"].mean),
+        return ResultData(
+            energy=jnp.real(ops_vals["e"].mean),
             energy_var=jnp.real(ops_vals["e"].variance),
             spins=jnp.array(
                 [
@@ -150,4 +187,5 @@ class Result:
             xx=jnp.real(ops_vals["xx"].mean),
             yy=jnp.real(ops_vals["yy"].mean),
             zz=jnp.real(ops_vals["zz"].mean),
-            zz_mid=jnp.real(ops_vals["zz_mid"].mean),)
+            zz_mid=jnp.real(ops_vals["zz_mid"].mean),
+        )

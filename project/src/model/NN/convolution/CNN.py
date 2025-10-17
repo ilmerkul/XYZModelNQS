@@ -1,27 +1,57 @@
-from typing import List
+import os
+import pathlib
+import sys
+from dataclasses import dataclass, field
+from typing import Any
 
 import jax
-import netket.nn
 from flax import linen as nn
-from flax import struct
 from jax import nn as jnn
 from jax import numpy as jnp
 
+project_path = pathlib.Path(os.getcwd())
 
+sys.path.append(project_path.as_posix())
+
+import netket as nk
+
+from src.model.struct import ChainConfig
+from src.utils import powers_of_two
+
+
+@dataclass(frozen=True)
 class CNNConfig:
-    lenght: int = 10
-    n_state: int = 2
-    state_feature: int = 8
-    convs: List = [(32, 5), (64, 4), (128, 3)]
-    use_bias: bool = True
-    dtype: jnp.dtype = jnp.float64
-    default_kernel_init: jnn.initializers.Initializer = jnn.initializers.normal(
-        1e-1, dtype=jnp.float64
-    )
-    default_bias_init: jnn.initializers.Initializer = jnn.initializers.normal(
-        1e-4, dtype=jnp.float64
-    )
-    symm: bool = True
+    chain: ChainConfig
+    use_bias: bool
+    dtype: jnp.dtype
+    symm: bool
+
+    default_kernel_init: Any = field(init=False)
+    default_bias_init: Any = field(init=False)
+    n_state: int = field(init=False)
+    state_feature: int = field(init=False)
+    convs: Any = field(init=False)
+
+    def __post_init__(self):
+        default_kernel_init: jnn.initializers.Initializer = jnn.initializers.normal(
+            1e-1, dtype=self.dtype
+        )
+        default_bias_init: jnn.initializers.Initializer = jnn.initializers.normal(
+            1e-4, dtype=self.dtype
+        )
+        n_state = int(2 * self.chain.spin + 1)
+        state_feature = int(self.chain.n)
+        powers = powers_of_two(self.chain.n)
+        powers = list(map(lambda x: x + 1, powers))
+        powers[-1] -= 1
+        fs = jnp.linspace(3, self.chain.n**2, len(powers), dtype=jnp.int32).tolist()
+        convs = [(f, p) for f, p in zip(fs, powers)]
+
+        object.__setattr__(self, "default_kernel_init", default_kernel_init)
+        object.__setattr__(self, "default_bias_init", default_bias_init)
+        object.__setattr__(self, "n_state", n_state)
+        object.__setattr__(self, "state_feature", state_feature)
+        object.__setattr__(self, "convs", convs)
 
 
 class Embed(nn.Module):
@@ -55,7 +85,7 @@ class CNN(nn.Module):
             )
             for (conv_feature, ker) in self.config.convs
         ]
-        self.norms = [nn.LayerNorm() for _ in range(self.config.lenght)]
+        self.norms = [nn.LayerNorm() for _ in range(self.config.chain.n)]
         self.act = nn.elu
         self.dense = nn.Dense(
             features=1, use_bias=self.config.use_bias, dtype=self.config.dtype
@@ -76,19 +106,29 @@ class CNN(nn.Module):
             x = (self.dense(x) + self.dense(x[:, :, ::-1])) / 2.0
         else:
             x = self.dense(x)
-        # x = netket.nn.log_cosh(x)
+        x = nk.nn.log_cosh(x)
 
         return x.squeeze()
 
 
 if __name__ == "__main__":
-    n = 10
-    cnn = CNN(CNNConfig())
+    chain_cfg = ChainConfig(
+        n=12,
+        j=1,
+        h=0.0,
+        lam=1,
+        gamma=0,
+        spin=1 / 2,
+    )
+    cnn_config = CNNConfig(chain=chain_cfg, dtype=jnp.float64, symm=True, use_bias=True)
+    cnn = CNN(cnn_config)
 
     key = jax.random.PRNGKey(42)
-    input = jnp.ones(16 * n)
-    input = input.at[jax.random.randint(key, (16, n), 0, 16 * n)].set(-1)
-    input = input.reshape(16, n)
+    input = jnp.ones(16 * chain_cfg.n)
+    input = input.at[
+        jax.random.randint(key, (16, chain_cfg.n), 0, 16 * chain_cfg.n)
+    ].set(-1)
+    input = input.reshape(16, chain_cfg.n)
     init_rngs = {"params": key, "dropout": key}
     params = cnn.init(init_rngs, input)
     print(input)

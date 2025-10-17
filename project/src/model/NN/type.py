@@ -4,3 +4,7 @@ class NNType:
     GCNN: str = "gcnn"
     TRANSFORMER: str = "transformer"
     PHASE_TRANSFORMER: str = "phase_transformer"
+
+
+class NNConfig:
+    pass

@@ -1,71 +1,104 @@
-from typing import Dict, Tuple
+import os
+import pathlib
+import sys
+from dataclasses import dataclass, field
+from random import random
+from typing import Any, Tuple
 
 import jax
-import netket as nk
-import netket.nn
 from flax import linen as nn
-from flax import struct
 from jax import lax
 from jax import nn as jnn
 from jax import numpy as jnp
-from netket.utils.group import PermutationGroup
+
+project_path = pathlib.Path(os.getcwd())
+
+sys.path.append(project_path.as_posix())
+from src.model.NN import NNConfig
+from src.model.struct import ChainConfig
 
 
-@struct.dataclass
-class TransformerConfig:
-    # Number of encoder layer pairs
-    layers: int = 2
+class KVCache:
+    def __init__(self, batch_size: int, n_layers: int, length: int, features: int):
+        self.key: jnp.ndarray = jnp.zeros((batch_size, n_layers, length, features))
+        self.value: jnp.ndarray = jnp.zeros((batch_size, n_layers, length, features))
 
-    # Number of units in dense layer
-    mlp_dim_scale: int = 4
 
-    # Tokens length
-    length: int = 10
+@dataclass(frozen=True)
+class TransformerConfig(NNConfig):
+    chain: ChainConfig
+    autoregressive: bool
+    use_bias: bool
+    use_dropout: bool
+    training: bool
+    symm: bool
+    embed_concat: bool
+    state_inverse: bool
+    dropout_rate: float
+    inverse_iter_rate: float
+    seed: int
+    pos_embed: str
+    eps: float
+    dtype: Any = field(default_factory=lambda: jnp.float32)
 
-    # Number of embedding dim
-    features: int = 8
+    default_kernel_init: Any = field(init=False)
+    default_bias_init: Any = field(init=False)
+    n_state: int = field(init=False)
+    layers: int = field(init=False)
+    features: int = field(init=False)
+    mlp_dim_scale: int = field(init=False)
+    num_heads: int = field(init=False)
 
-    # Number of heads in multihead attention
-    num_heads: int = 2
+    def __post_init__(self):
+        default_kernel_init = nn.initializers.xavier_uniform(dtype=self.dtype)
+        default_bias_init = jnn.initializers.constant(0.0, dtype=self.dtype)
+        n_state = int(2 * self.chain.spin + 1)
+        layers = int(self.chain.n**0.5)
+        features = int(self.chain.n**1.5)
+        if features % 2 != 0:
+            features += 1
+        mlp_dim_scale = int(self.chain.n**0.5)
 
-    # Bias
-    use_bias: bool = False
+        for i in range(layers, 0, -1):
+            if features % i == 0:
+                num_heads = i
+                break
 
-    # Dropout rate
-    dropout_rate: float = 0.1
+        object.__setattr__(self, "default_kernel_init", default_kernel_init)
+        object.__setattr__(self, "default_bias_init", default_bias_init)
+        object.__setattr__(self, "n_state", n_state)
+        object.__setattr__(self, "layers", layers)
+        object.__setattr__(self, "features", features)
+        object.__setattr__(self, "mlp_dim_scale", mlp_dim_scale)
+        object.__setattr__(self, "num_heads", num_heads)
 
-    # Dropout or not
-    training: bool = False
 
-    # Random seed
-    seed: int = 0
+@dataclass(frozen=True)
+class PosEmbType:
+    ROTARY: str = "rope"
+    LEARN_ABSOLUTE: str = "labs"
+    ABSOLUTE: str = "abs"
+    ZERO: str = "zero"
+    RELATIVE: str = "rel"
 
-    n_state: int = 2
 
-    dtype: jnp.dtype = jnp.float64
+class LearnedPositionalEmbedding(nn.Module):
+    num_embeddings: int
+    features: int
+    dtype: jnp.dtype
 
-    automorphisms: PermutationGroup = nk.graph.Chain(
-        length=10, pbc=True
-    ).automorphisms()
-
-    hilbert: nk.hilbert.Spin = nk.hilbert.Spin(N=10, s=1 / 2)
-
-    symm: bool = False
-
-    embed_concat: bool = False
-
-    pos_embed: str = "rope"
-
-    default_kernel_init: jnn.initializers.Initializer = jnn.initializers.normal(
-        1e-1, dtype=jnp.float64
-    )
-    default_bias_init: jnn.initializers.Initializer = jnn.initializers.normal(
-        1e-4, dtype=jnp.float64
-    )
+    @nn.compact
+    def __call__(self, batch_size: int) -> jax.Array:
+        pos = jnp.arange(self.num_embeddings)
+        pos = jnp.repeat(pos[None, :], batch_size, axis=0)
+        return nn.Embed(
+            num_embeddings=self.num_embeddings, features=self.features, dtype=self.dtype
+        )(pos)
 
 
 class MultiheadAttention(nn.Module):
     config: TransformerConfig
+    n_layer: int
     decode: bool = False
 
     def setup(self):
@@ -106,59 +139,53 @@ class MultiheadAttention(nn.Module):
 
     @nn.compact
     def __call__(
-        self, kv: jax.Array, q: jax.Array, mask: jax.Array, kv_cache: jax.Array
-    ):
-        # Initialize config
+        self,
+        kv: jax.Array,
+        q: jax.Array,
+        mask: jax.Array,
+        kv_cache: KVCache,
+        n_iter: int,
+    ) -> Tuple[jax.Array, KVCache]:
         cfg = self.config
-        # Initialize key, query, value through Dense layer
         query = self.query_dense(q)
 
-        key = self.key_dense(kv[:, -1, :])
-        value = self.value_dense(kv[:, -1, :])
-
-        if kv_cache is None:
-            kv_cache = jnp.concatenate(
-                [jnp.expand_dims(key, axis=-1), jnp.expand_dims(value, axis=-1)],
-                axis=-1,
-            )
-            kv_cache = jnp.expand_dims(kv_cache, axis=1)
+        if self.config.autoregressive:
+            key = self.key_dense(kv[:, n_iter, :])
+            value = self.value_dense(kv[:, n_iter, :])
         else:
-            key = jnp.concatenate(
-                [kv_cache[:, :, :, 0], jnp.expand_dims(key, axis=1)], axis=1
-            )
-            value = jnp.concatenate(
-                [kv_cache[:, :, :, 1], jnp.expand_dims(value, axis=1)], axis=1
-            )
+            key = self.key_dense(kv)
+            value = self.value_dense(kv)
 
-            kv_cache = jnp.concatenate(
-                [jnp.expand_dims(key, axis=-1), jnp.expand_dims(value, axis=-1)],
-                axis=-1,
-            )
+        if self.config.autoregressive:
+            kv_cache.key = kv_cache.key.at[:, self.n_layer, n_iter, :].set(key)
+            kv_cache.value = kv_cache.value.at[:, self.n_layer, n_iter, :].set(value)
 
         batch_size = query.shape[0]
 
-        # Layer norm
+        if self.config.autoregressive:
+            key = kv_cache.key[:, self.n_layer, : (n_iter + 1), :]
+            value = kv_cache.value[:, self.n_layer, : (n_iter + 1), :]
+
         # query = nn.LayerNorm()(query)
         # key = nn.LayerNorm()(key)
         # value = nn.LayerNorm()(value)
 
+        assert cfg.features % cfg.num_heads == 0
         head_dim = cfg.features // cfg.num_heads
 
-        # Split head
         query = query.reshape(batch_size, -1, cfg.num_heads, head_dim)
         key = key.reshape(batch_size, -1, cfg.num_heads, head_dim)
         value = value.reshape(batch_size, -1, cfg.num_heads, head_dim)
-        # Scaled dot-product attention
+
         logits = self.scaled_dot_product_attention(
             key, query, value, mask, cfg.dtype, cfg.pos_embed
         )
 
-        # Concat
         logits = logits.reshape(batch_size, -1, cfg.features)
 
-        # Linear
         logits = self.logits_dense(logits)
-        logits = self.dropout(logits)
+        if self.config.use_dropout:
+            logits = self.dropout(logits)
 
         return logits, kv_cache
 
@@ -180,29 +207,25 @@ class MultiheadAttention(nn.Module):
         length_k = key.shape[1]
         hid_head = query.shape[3]
 
-        if pos_embed == "rope":
-            query, key = self.rope_embedding(hid_head, length_q, query, key)
+        if pos_embed == PosEmbType.ROTARY:
+            pos_embedding = self.rope_embedding(length_q, hid_head)
+            query *= pos_embedding
+            key *= pos_embedding
+
         attention_weights = jnp.einsum("bqhd,bkhd->bhqk", query, key)
 
-        if pos_embed == "rel":
+        if pos_embed == PosEmbType.RELATIVE:
             attention_weights_rel_pos = self.rel_embedding(
                 hid_head, length_q, length_k, dtype, query
             )
             attention_weights += attention_weights_rel_pos
 
-        # Scale
         d_k = query.shape[-1]
-        attention_weights = attention_weights / jnp.sqrt(d_k)
-        # Mask
-        num_heads = attention_weights.shape[1]
-        attention_weights = lax.select(
-            jnp.repeat(mask, num_heads, axis=1) > 0,
-            attention_weights,
-            jnp.full(attention_weights.shape, -jnp.inf, dtype=dtype),
-        )
+        attention_weights /= jnp.sqrt(d_k)
+        if mask is not None:
+            attention_weights = jnp.where(mask, attention_weights, jnp.finfo(dtype).min)
 
-        # Softmax
-        attention_weights = nn.softmax(attention_weights).astype(dtype)
+        attention_weights = nn.softmax(attention_weights, axis=-1).astype(dtype)
         """ Matmul
             qk: [batch, num_heads, q_length, kv_length]
             value: [batch, kv_length, num_heads, v_depth_per_head]
@@ -211,36 +234,19 @@ class MultiheadAttention(nn.Module):
 
         return jnp.einsum("bhqk,bkhd->bqhd", attention_weights, value)
 
-    def rope_embedding(
-        self, hid_head: int, length_q: int, query: jax.Array, key: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
-        def get_rope(x):
-            base = 1000
-            d = hid_head
-            length = x.shape[1]
-            theta = 1.0 / (base ** (jnp.arange(0, d, 2) / d))
-            seq_idx = jnp.arange(length)
-            idx_theta = jnp.einsum("n,d->nd", seq_idx, theta)
-            idx_theta2 = jnp.concatenate([idx_theta, idx_theta], axis=1)
-            cos_cached = jnp.cos(idx_theta2)[:, None, :]
-            sin_cached = jnp.sin(idx_theta2)[:, None, :]
+    def rope_embedding(self, length: int, features: int) -> Tuple[jax.Array, jax.Array]:
+        base = 10000.0
+        inv_freq = 1.0 / (base ** (jnp.arange(0, features, 2) / features))
+        sinusoid_inp = jnp.einsum("i,j->ij", jnp.arange(length), inv_freq)
 
-            x_rope, x_pass = x[..., :d], x[..., d:]
+        sin = jnp.sin(sinusoid_inp)
+        if features % 2 != 0:
+            sinusoid_inp = sinusoid_inp[:, :-1]
+        cos = jnp.cos(sinusoid_inp)
 
-            d_2 = d // 2
-            neg_half_x = jnp.concatenate(
-                [-x_rope[:, :, :, d_2:], x_rope[:, :, :, :d_2]], axis=-1
-            )
+        emb = jnp.concat([sin, cos], axis=1)[:, None, :]
 
-            x_rope = x_rope * cos_cached[:length]
-            x_rope += neg_half_x * sin_cached[:length]
-
-            return jnp.concatenate((x_rope, x_pass), axis=-1)
-
-        query = get_rope(query)
-        key = get_rope(key)
-
-        return query, key
+        return emb
 
     def rel_embedding(
         self, hid_head: int, length_q: int, length_k: int, dtype, query: jax.Array
@@ -283,8 +289,10 @@ class MultiheadAttention(nn.Module):
 
     @classmethod
     def causal_mask(cls, input_tokens):
-        mask = cls.attention_mask(input_tokens)
-        mask = jnp.full(mask.shape, 1)
+        # mask = cls.attention_mask(input_tokens)
+        mask = jnp.full(
+            (input_tokens.shape[0], 1, input_tokens.shape[1], input_tokens.shape[1]), 1
+        )
         # mask -= jnp.triu(mask, k=1)
         return mask
 
@@ -321,113 +329,176 @@ class MLP(nn.Module):
     @nn.compact
     def __call__(self, x):
         x = self.dense0(x)
-        x = self.dropout0(x)
-        x = netket.nn.elu(x)
+        if self.config.use_dropout:
+            x = self.dropout0(x)
+        x = nn.tanh(x)
         x = self.dense1(x)
-        x = self.dropout1(x)
+        if self.config.use_dropout:
+            x = self.dropout1(x)
+        return x
+
+
+class EncoderBlock(nn.Module):
+    config: TransformerConfig
+    n_layer: int
+
+    def setup(self) -> None:
+        self.norm1 = nn.RMSNorm(dtype=self.config.dtype)
+        self.norm2 = nn.RMSNorm(dtype=self.config.dtype)
+
+        self.mha = MultiheadAttention(config=self.config, n_layer=self.n_layer)
+
+        self.mlp = MLP(config=self.config)
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        mask: jax.Array,
+        n_iter: int = None,
+        kv_cache: KVCache = None,
+    ) -> Tuple[jax.Array, KVCache]:
+        y = self.norm1(x)
+        y, kv_cache = self.mha(
+            kv=y,
+            q=y,
+            mask=mask,
+            kv_cache=kv_cache,
+            n_iter=n_iter,
+        )
+        x = y + x
+        y = self.norm2(x)
+        y = self.mlp(x)
+        x = y + x
         return x
 
 
 class Encoder(nn.Module):
     config: TransformerConfig
 
+    def setup(self) -> None:
+        self.layers = [
+            EncoderBlock(config=self.config, n_layer=n_layer)
+            for n_layer in range(self.config.layers)
+        ]
+
     @nn.compact
     def __call__(
-        self, input_embedding: jax.Array, encoder_mask: jax.Array, kv_cache: jax.Array
-    ) -> Tuple[jax.Array, jax.Array]:
+        self,
+        x: jax.Array,
+        encoder_mask: jax.Array,
+        n_iter: int = None,
+        kv_cache: KVCache = None,
+    ) -> Tuple[jax.Array, KVCache]:
         cfg = self.config
 
-        # Encoder layer
-        x = input_embedding
-        kv_cache_current = []
-        for i in range(cfg.layers):
-            # Multihead Attention
-            if kv_cache is not None:
-                kv = kv_cache[:, i, :, :, :]
-            else:
-                kv = None
+        batch_size = x.shape[0]
 
-            y = nn.RMSNorm()(x)
-            y, kv = MultiheadAttention(config=cfg)(
-                kv=y, q=y, mask=encoder_mask, kv_cache=kv
+        if kv_cache is not None and n_iter is None:
+            raise ValueError("kv_cache is not None and n_iter is None")
+
+        if n_iter is None:
+            n_iter = cfg.chain.n
+
+        if kv_cache is None and cfg.autoregressive:
+            kv_cache = KVCache(
+                batch_size=batch_size,
+                n_layers=self.config.layers,
+                length=self.config.chain.n + 1,
+                features=self.config.features,
             )
-            kv_cache_current.append(jnp.expand_dims(kv, axis=1))
-            # Add & Norm
-            x = y + x
-            y = nn.RMSNorm()(x)
-            # MLP
-            y = MLP(cfg)(y)
-            # Add & Norm
-            x = y + x
-
-        kv_cache_current = jnp.concatenate(kv_cache_current, axis=1)
-
-        kv_cache = kv_cache_current
+        for layer in self.layers:
+            x = layer(x, mask=encoder_mask, n_iter=n_iter, kv_cache=kv_cache)
 
         return x, kv_cache
 
 
-class Transformer(nn.Module):
+class OutputHead(nn.Module):
     config: TransformerConfig
-    states: Dict[int, int] = None
+
+    def setup(self):
+        features_out = self.config.n_state
+        if not self.config.autoregressive:
+            features_out = 1
+
+        self.dense_out = nn.Dense(
+            features=features_out,
+            use_bias=self.config.use_bias,
+            name="tr_dense_out",
+            dtype=self.config.dtype,
+            kernel_init=self.config.default_kernel_init,
+            bias_init=self.config.default_bias_init,
+        )
+
+        self.phase_dense_out = nn.Dense(
+            features=1,
+            use_bias=self.config.use_bias,
+            name="tr_phase_dense_out",
+            dtype=self.config.dtype,
+            kernel_init=self.config.default_kernel_init,
+            bias_init=self.config.default_bias_init,
+        )
+
+        self.norm = nn.RMSNorm(dtype=self.config.dtype)
+
+    def get_prob(self, x_row, token):
+        return x_row[token]
+
+    def sample_one(self, p_row, key):
+        return jax.random.choice(key, a=jnp.array(range(self.config.n_state)), p=p_row)
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        encoder_input_tokens: jax.Array = None,
+        generate: bool = False,
+    ) -> Tuple[jax.Array, jax.Array, jax.Array]:
+        batch_size = x.shape[0]
+
+        x = self.norm(x)
+
+        x = x[:, 0, :]
+        x = self.dense_out(x)
+        phase = jnp.pi * nn.tanh(self.phase_dense_out(x)).squeeze(-1)
+        if generate:
+            x = nn.softmax(x, axis=-1)
+            key = jax.random.PRNGKey(seed=self.config.seed)
+            keys = jax.random.split(key, batch_size)
+            sample = jax.vmap(self.sample_one)(x, keys)
+            prob = jax.vmap(self.get_prob)(x, sample)
+        elif self.config.autoregressive:
+            x = nn.softmax(x, axis=-1)
+            prob = jax.vmap(self.get_prob)(x, encoder_input_tokens)
+            sample = None
+        else:
+            prob = nn.sigmoid(x.squeeze(-1))
+            sample = None
+
+        return prob, phase, sample
+
+
+class Embed(nn.Module):
+    config: TransformerConfig
 
     def setup(self) -> None:
-        cfg = self.config
-
-        self.features_2 = cfg.features
-        if cfg.embed_concat:
+        self.features_2 = self.config.features
+        if self.config.embed_concat:
             self.features_2 //= 2
 
         self.embed = nn.Embed(
-            num_embeddings=1,  # cfg.n_state,
+            num_embeddings=self.config.n_state + 1,
             features=self.features_2,
             name="tr_embed",
-            dtype=cfg.dtype,
+            dtype=self.config.dtype,
         )
-
-        self.dense_out = nn.Dense(
-            features=2,
-            use_bias=cfg.use_bias,
-            name="tr_dense_out",
-            dtype=cfg.dtype,
-            kernel_init=cfg.default_kernel_init,
-            bias_init=cfg.default_bias_init,
-        )
-
-        self.enc = Encoder(cfg)
-
-    def labs_embedding(self, batch_size: int, features_2: int) -> jax.Array:
-        cfg = self.config
-
-        if cfg.symm:
-            pos_num_embeddings = (cfg.length + 1) // 2
-            pos = jnp.concatenate(
-                [
-                    jnp.arange(pos_num_embeddings),
-                    jnp.arange(
-                        pos_num_embeddings - 1 - (1 if cfg.length % 2 != 0 else 0),
-                        -1,
-                        -1,
-                    ),
-                ],
-                axis=0,
-            )
-        else:
-            pos_num_embeddings = cfg.length
-            pos = jnp.arange(cfg.length)
-        pos = jnp.repeat(jnp.expand_dims(pos, axis=0), batch_size, axis=0)
-        pos_embedding = nn.Embed(
-            num_embeddings=pos_num_embeddings, features=features_2, dtype=cfg.dtype
-        )(pos)
-
-        return pos_embedding
 
     def abs_embedding(self, features_2: int) -> jax.Array:
         cfg = self.config
 
         base = 10000.0
-        pos_embedding = jnp.zeros((cfg.length, features_2))
-        position = jnp.arange(0, cfg.length)[:, None]
+        pos_embedding = jnp.zeros((cfg.chain.n, features_2))
+        position = jnp.arange(0, cfg.chain.n)[:, None]
         div_term = jnp.exp(
             (jnp.arange(0, features_2, 2) * -(jnp.log(base) / features_2))
         )
@@ -437,147 +508,240 @@ class Transformer(nn.Module):
         return pos_embedding
 
     def get_embedding(self, batch_size: int, input_embedding: jax.Array) -> jax.Array:
-        if self.config.pos_embed == "labs":
-            pos_embedding = self.labs_embbeding(batch_size, self.features_2)
-        elif self.config.pos_embed == "abs":
+        if self.config.pos_embed == PosEmbType.LEARN_ABSOLUTE:
+            pos_embedding = LearnedPositionalEmbedding(
+                num_embeddings=self.config.chain.n,
+                features=self.features_2,
+                dtype=self.config.dtype,
+            )(batch_size)
+        elif self.config.pos_embed == PosEmbType.ABSOLUTE:
             pos_embedding = self.abs_embedding(self.features_2)
+        elif self.config.pos_embed == PosEmbType.ROTARY:
+            pos_embedding = jnp.zeros_like(input_embedding, dtype=self.config.dtype)
+        elif self.config.pos_embed == PosEmbType.ZERO:
+            pos_embedding = jnp.zeros_like(input_embedding, dtype=self.config.dtype)
         else:
-            pos_embedding = jnp.zeros_like(input_embedding)
+            raise ValueError("pos_embed error")
 
         if self.config.embed_concat:
-            input_embedding = jnp.concatenate([pos_embedding, input_embedding], axis=-1)
+            input_embedding = jnp.concat([pos_embedding, input_embedding], axis=-1)
         else:
             input_embedding += pos_embedding
 
         return input_embedding
 
     def get_input(self, batch_size: int, encoder_input_tokens: jax.Array) -> jax.Array:
-        # encoder_input_tokens = (encoder_input_tokens > 0).astype(jnp.int32)
-        # state_embedding = self.embed(encoder_input_tokens)
-        state_embedding = self.embed(
-            jnp.zeros_like(encoder_input_tokens).astype(jnp.int32)
-        )
-        state_embedding = state_embedding * jnp.expand_dims(
-            encoder_input_tokens, axis=-1
-        )
-        input_embedding = state_embedding
+        signs = encoder_input_tokens
+        encoder_input_tokens_state = encoder_input_tokens
+        if self.config.state_inverse:
+            encoder_input_tokens_state = jnp.abs(encoder_input_tokens)
+        encoder_input_tokens_state = (
+            (encoder_input_tokens_state + self.config.chain.spin + 0.5) / 2
+        ).astype(jnp.int32)
+        encoder_input_tokens = (
+            (encoder_input_tokens + self.config.chain.spin + 0.5) / 2
+        ).astype(jnp.int32)
+        firt_embedding = self.embed(jnp.full((batch_size, 1), self.config.n_state))
+        state_embedding = self.embed(encoder_input_tokens_state)
+        if self.config.state_inverse:
+            state_embedding = jnp.where(
+                signs[..., None] > 0, state_embedding, -state_embedding
+            )
 
-        input_embedding = self.get_embedding(batch_size, input_embedding)
+        state_embedding_direct = jnp.concat([firt_embedding, state_embedding], axis=1)
+        state_embedding_inverse = jnp.concat(
+            [firt_embedding, jnp.flip(state_embedding, axis=1)], axis=1
+        )
 
-        return input_embedding
+        state_embedding_direct = self.get_embedding(batch_size, state_embedding_direct)
+        state_embedding_inverse = self.get_embedding(
+            batch_size, state_embedding_inverse
+        )
+
+        return state_embedding_direct, state_embedding_inverse, encoder_input_tokens
+
+    @nn.compact
+    def __call__(self, batch_size, sample) -> jax.Array:
+        return self.get_input(batch_size, sample)
+
+
+class Transformer(nn.Module):
+    config: TransformerConfig
+
+    def setup(self) -> None:
+        self.embed = Embed(config=self.config)
+
+        self.enc = Encoder(config=self.config)
+
+        self.out_head = OutputHead(config=self.config)
+
+    def enc_iter(
+        self,
+        x: jax.Array,
+        encoder_mask: jax.Array,
+        encoder_input_tokens: jax.Array = None,
+        kv_cache=None,
+        n_iter: int = None,
+    ):
+        if n_iter is not None:
+            x = x[:, : (n_iter + 1), :]
+            encoder_mask = encoder_mask[:, :, : (n_iter + 1), : (n_iter + 1)]
+
+        x, kv_cache = self.enc(
+            x=x,
+            encoder_mask=encoder_mask,
+            kv_cache=kv_cache,
+            n_iter=n_iter,
+        )
+        return self.out_head(x=x, encoder_input_tokens=encoder_input_tokens), kv_cache
 
     @nn.compact
     def __call__(
         self,
         encoder_input_tokens: jax.Array = None,
-        autoregressive: bool = True,
         generate: bool = False,
         n_chains: int = 16,
-        key: jax.Array = None,
     ) -> jax.Array:
         cfg = self.config
 
         if encoder_input_tokens is None and not generate:
             assert "encoder_input_tokens need for model"
 
-        if not generate:
-            batch_size = encoder_input_tokens.shape[0]
-            input_embedding = self.get_input(batch_size, encoder_input_tokens)
-
-        σ = encoder_input_tokens
-        log_prob = None
-
-        def get_prob(x_row, token):
-            return x_row[token]
-
-        if autoregressive:
-            if generate:
-
-                def sample_one(p_row, key):
-                    return jax.random.choice(
-                        key, a=jnp.array(range(self.config.n_state)), p=p_row
-                    )
-
-                input_embedding = jnp.zeros(
-                    (n_chains, self.config.length + 1, cfg.features)
-                )
-                kv_cache = None
-                padding_mask = MultiheadAttention.causal_mask(
-                    jnp.ones(input_embedding.shape[:-1])
-                )
-                prob = jnp.ones((n_chains,))
-                samples = jnp.zeros((n_chains, self.config.length))
-                if key is None:
-                    key = jax.random.PRNGKey(42)
-                for i in range(self.config.length):
-                    x = input_embedding[:, : (i + 1), :]
-                    mask = padding_mask[:, :, : (i + 1), : (i + 1)]
-
-                    x, kv_cache = self.enc(
-                        input_embedding=x, encoder_mask=mask, kv_cache=kv_cache
-                    )
-                    x = x[:, -1, :]
-                    x = self.dense_out(x)
-                    x = nn.softmax(x, axis=-1)
-
-                    keys = jax.random.split(key, n_chains)
-                    sample = jax.vmap(sample_one)(x, keys)
-                    samples = samples.at[:, i].set(sample)
-                    new_input_embedding = self.get_input(n_chains, sample)
-                    input_embedding.at[:, (i + 1), :].set(new_input_embedding)
-                    prob *= jax.vmap(get_prob)(x, sample)
-
-                σ = samples
-                log_prob = jnp.log(prob)
-            else:
-                encoder_input_tokens = (encoder_input_tokens > 0).astype(jnp.int32)
-                batch_size = encoder_input_tokens.shape[0]
-
-                prob = jnp.ones((batch_size,))
-                input_embedding = jnp.concatenate(
-                    [jnp.zeros((batch_size, 1, cfg.features)), input_embedding], axis=1
-                )
-                kv_cache = None
-                padding_mask = MultiheadAttention.causal_mask(
-                    jnp.ones(input_embedding.shape[:-1])
-                )
-                for i in range(self.config.length):
-                    x = input_embedding[:, : (i + 1), :]
-                    mask = padding_mask[:, :, : (i + 1), : (i + 1)]
-
-                    x, kv_cache = self.enc(
-                        input_embedding=x, encoder_mask=mask, kv_cache=kv_cache
-                    )
-                    x = x[:, -1, :]
-                    x = self.dense_out(x)
-                    x = nn.softmax(x, axis=-1)
-
-                    prob *= jax.vmap(get_prob)(x, encoder_input_tokens[:, i])
-
-                log_prob = jnp.log(prob)
+        if encoder_input_tokens is None:
+            batch_size = n_chains
         else:
-            x = input_embedding
-            padding_mask = MultiheadAttention.attention_mask(jnp.ones(x.shape[:-1]))
-            x = self.enc(input_embedding=x, encoder_mask=padding_mask)
+            batch_size = encoder_input_tokens.shape[0]
 
-            x = self.dense_out(x)
+        if generate:
+            input_embedding = jnp.zeros(
+                (batch_size, self.config.chain.n + 1, cfg.features)
+            )
+        else:
+            input_embedding, input_embedding_inverse, encoder_input_tokens = self.embed(
+                batch_size, encoder_input_tokens
+            )
 
-            x = nn.softmax(x, axis=-2)
-            x = x.max(axis=-1)
-            log_prob = jnp.prod(x, axis=-2).squeeze(-1)
+        padding_mask = MultiheadAttention.causal_mask(
+            jnp.ones(input_embedding.shape[:-1])
+        )
+
+        if generate:
+
+            kv_cache = None
+
+            prob = jnp.ones((batch_size,))
+            samples = jnp.zeros((batch_size, self.config.chain.n))
+            for n_iter in range(self.config.chain.n):
+
+                (prob_iter, phase, sample), kv_cache = self.enc_iter(
+                    x=input_embedding,
+                    encoder_mask=padding_mask,
+                    kv_cache=kv_cache,
+                    n_iter=n_iter,
+                )
+
+                samples = samples.at[:, n_iter].set(sample)
+                new_input_embedding, _, _ = self.embed(batch_size, sample)
+                input_embedding.at[:, (n_iter + 1), :].set(new_input_embedding)
+                prob *= prob_iter
+
+            σ = samples
+        elif cfg.autoregressive:
+
+            def enc_iter(input_embedding, encoder_input_tokens):
+                prob = jnp.ones((batch_size,))
+                kv_cache = None
+                for n_iter in range(self.config.chain.n + 1):
+                    (prob_iter, phase, _), kv_cache = self.enc_iter(
+                        x=input_embedding,
+                        encoder_mask=padding_mask,
+                        encoder_input_tokens=encoder_input_tokens[:, n_iter],
+                        kv_cache=kv_cache,
+                        n_iter=n_iter,
+                    )
+                    prob *= prob_iter
+
+                return prob, phase
+
+            prob, phase = enc_iter(
+                input_embedding,
+                encoder_input_tokens,
+            )
+            if self.config.symm:
+                r = random()
+                prob1, phase1 = enc_iter(
+                    input_embedding_inverse,
+                    encoder_input_tokens,
+                )
+
+                if 2 * self.config.inverse_iter_rate < r or not self.config.training:
+                    prob = (prob + prob1) / 2.0
+                    phase = (phase + phase1) / 2.0
+                elif r > self.config.inverse_iter_rate:
+                    prob = prob1
+                    phase = phase1
+        else:
+
+            (prob, phase, _), _ = self.enc_iter(
+                x=input_embedding, encoder_mask=padding_mask
+            )
+            if self.config.symm:
+                (prob1, phase1, _), _ = self.enc_iter(
+                    x=input_embedding_inverse, encoder_mask=padding_mask
+                )
+                r = random()
+
+                if 2 * self.config.inverse_iter_rate < r or not self.config.training:
+                    prob = (prob + prob1) / 2.0
+                    phase = (prob + phase1) / 2.0
+                elif r > self.config.inverse_iter_rate:
+                    prob = prob1
+                    phase = phase1
+
+        log_prob = jnp.log(prob + cfg.eps) + 1j * phase
+
+        if not generate:
+            return log_prob
 
         return σ, log_prob
 
 
 if __name__ == "__main__":
-    n = 11
-    tr = Transformer(TransformerConfig(training=True, symm=True, length=n))
+    chain_cfg = ChainConfig(
+        n=20,
+        j=-1,
+        h=0.0,
+        lam=1,
+        gamma=0,
+        spin=1 / 2,
+    )
+    transformer_config = TransformerConfig(
+        chain=chain_cfg,
+        use_bias=True,
+        use_dropout=False,
+        dropout_rate=0.1,
+        inverse_iter_rate=0.3,
+        training=True,
+        seed=42,
+        autoregressive=False,
+        dtype=jnp.float64,
+        symm=True,
+        embed_concat=False,
+        state_inverse=True,
+        pos_embed=PosEmbType.ROTARY,
+        eps=1e-10,
+    )
+    tr = Transformer(transformer_config)
 
     key = jax.random.PRNGKey(42)
-    input = jnp.ones(16 * n)
-    input = input.at[jax.random.randint(key, (16, n), 0, 16 * n)].set(-1)
-    input = input.reshape(16, n)
+    input = jnp.ones(16 * chain_cfg.n)
+    input = input.at[
+        jax.random.randint(key, (16, chain_cfg.n), 0, 16 * chain_cfg.n)
+    ].set(-1)
+    input = input.reshape(16, chain_cfg.n)
+    print(input)
     init_rngs = {"params": key, "dropout": key}
     params = tr.init(init_rngs, input)
-    print(input)
-    print(tr.apply(params, input, generate=True, rngs={"dropout": key}))
+    output = tr.apply(params, input, generate=False, rngs={"dropout": key})
+    print(output)
+    print(output.shape)

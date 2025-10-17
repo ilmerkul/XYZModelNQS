@@ -9,7 +9,7 @@ from netket.jax.sharding import shard_along_axis
 from netket.sampler.base import Sampler, SamplerState
 from netket.utils.types import PyTree
 
-from src.model.NN import Transformer, TransformerConfig
+from src.model.NN.transformer import Transformer, TransformerConfig
 
 
 class TransformerSamplerState(SamplerState):
@@ -77,7 +77,7 @@ class TransformerSampler(Sampler):
             batch_dim = int(chain_length * 0.7)
 
             σ, log_prob = machine.apply(
-                parameters, None, generate=True, batch_dim=batch_dim, key=key
+                parameters, None, generate=True, batch_dim=batch_dim  # , key=key
             )
 
             s["key"] = s_key
