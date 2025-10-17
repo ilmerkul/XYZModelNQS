@@ -33,6 +33,9 @@ COPY ./pyproject.toml .
 RUN chmod +x /tmp/install.sh
 RUN /tmp/install.sh ${VENV_PATH}
 
+COPY ./docker/cmd.sh /tmp/cmd.sh
+
 VOLUME ${CONTAINER_WORKDIR}
 
+ENTRYPOINT ["/tmp/cmd.sh"]
 CMD [ "/bin/bash" ]

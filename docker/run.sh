@@ -15,6 +15,8 @@ fi
 docker run --rm --gpus all -it \
   --env CUDA_VISIBLE_DEVICES=-1 \
   --env CONTAINER_WORKDIR=$CONTAINER_WORKDIR \
+  --env TENSORBOARD_PORT=$TENSORBOARD_PORT \
+  --publish "$TENSORBOARD_PORT:$TENSORBOARD_PORT" \
   --volume="$PROJECT_DIR/project:$CONTAINER_WORKDIR/project" \
   --volume="$PROJECT_DIR/pyproject.toml:$CONTAINER_WORKDIR/pyproject.toml" \
   "$DOCKER_IMAGE"

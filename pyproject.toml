@@ -9,7 +9,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "netket[cuda] (>=3.19.2,<4.0.0)",
-    "pennylane (>=0.40.0,<0.42.4)"
+    "pennylane (>=0.40.0,<0.42.4)",
+    "tensorboardx (>=2.6.4,<3.0.0)",
+    "tensorboard (>=2.20.0,<3.0.0)",
+    "orbax-checkpoint (==0.10.3)"
 ]
 
 
