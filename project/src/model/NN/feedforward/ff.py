@@ -5,7 +5,6 @@ import flax.linen as nn
 import netket
 from jax import nn as jnn
 from jax import numpy as jnp
-
 from src.model.struct import ChainConfig
 
 

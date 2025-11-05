@@ -5,9 +5,8 @@ import jax
 import jax.numpy as jnp
 import netket as nk
 from netket.operator.spin import sigmax, sigmay, sigmaz
-
 from src.model.nqs.operator import get_model_netket_op
-from src.model.struct import ChainConfig
+from src.model.struct import ChainConfig, NameChain, get_type
 
 from ..exact import (
     analytical_energy,
@@ -51,14 +50,6 @@ class Result:
         SIGMA_ZZ_MID_LEN: lambda res_data: res_data.spins.sum() / len(res_data.spins),
     }
 
-    XY_MODEL: str = "xy"
-    XX_MODEL: str = "xx"
-    XYZ_MODEL: str = "xyz"
-    XXX_MODEL: str = "xxx"
-    XXZ_MODEL: str = "xxz"
-    TFI_MODEL: str = "tfi"
-    OTHER_MODEL: str = "other"
-
     def __init__(self, cfg: ChainConfig):
         self.cfg = cfg
         self.data = None
@@ -66,25 +57,9 @@ class Result:
         self.ares = None
 
     @staticmethod
-    def get_type(cfg: ChainConfig):
-        if cfg.gamma == 0.0 and cfg.lam == 0.0:
-            return Result.XX_MODEL
-        elif cfg.gamma == 0.0 and (cfg.lam == 1.0 or cfg.lam == -1.0):
-            return Result.TFI_MODEL
-        elif cfg.gamma == 0.0:
-            return Result.XY_MODEL
-        elif cfg.gamma == 1.0 and cfg.lam == 0.0:
-            return Result.XXX_MODEL
-        elif cfg.gamma != 1.0 and cfg.lam == 0.0:
-            return Result.XXZ_MODEL
-        elif cfg.gamma not in (0.0, 1, 0) and cfg.lam != 0.0:
-            return Result.XXZ_MODEL
-        return Result.OTHER_MODEL
-
-    @staticmethod
     def analytical_xy(cfg: ChainConfig) -> Dict[str, float]:
         """Analytical solution"""
-        if Result.get_type(cfg) != Result.XY_MODEL:
+        if get_type(cfg) != NameChain.XY:
             raise ValueError("type is not xy")
 
         ares = {}

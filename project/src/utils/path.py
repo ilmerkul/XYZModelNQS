@@ -6,8 +6,9 @@ from src.model.struct import ChainConfig
 prj_root = Path(__file__).parent.parent.parent.absolute()
 
 
-def report_name(cfg) -> str:
+def report_name(cfg: ChainConfig) -> str:
     report_file_name = "report_"
+    report_file_name += cfg.name + "_"
     report_file_name += "_".join(
         map(lambda kv: f"{kv[0]}({kv[1]})", asdict(cfg).items())
     )

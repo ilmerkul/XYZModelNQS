@@ -1,7 +1,6 @@
 import jax.numpy as np
 import netket as nk
 from netket.operator.spin import sigmax, sigmay, sigmaz
-
 from src.model.struct import ChainConfig
 
 

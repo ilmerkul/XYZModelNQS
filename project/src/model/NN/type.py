@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+
+
 class NNType:
     CNN: str = "cnn"
     FFN: str = "ffn"
@@ -6,5 +9,6 @@ class NNType:
     PHASE_TRANSFORMER: str = "phase_transformer"
 
 
+@dataclass(frozen=True)
 class NNConfig:
-    pass
+    nntype: NNType

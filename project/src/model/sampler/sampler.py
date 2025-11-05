@@ -8,7 +8,6 @@ from netket.jax import dtype_real
 from netket.jax.sharding import shard_along_axis
 from netket.sampler.base import Sampler, SamplerState
 from netket.utils.types import PyTree
-
 from src.model.NN.transformer import Transformer, TransformerConfig
 
 

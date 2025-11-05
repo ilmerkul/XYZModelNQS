@@ -6,7 +6,6 @@ import jax
 import netket as nk
 from jax import numpy as jnp
 from netket.utils.group import PermutationGroup
-
 from src.model.NN import NNConfig
 
 from ..graph.GCNN import GCNN, GCNNConfig
@@ -23,7 +22,9 @@ class PhaseTransformerConfig(NNConfig):
     gcnn_config: GCNNConfig = None
 
     hilbert: Any = field(init=False)
+    dtype: Any = field(init=False)
     training: int = field(init=False)
+    seed: int = field(init=False)
 
     def __post_init__(self):
         hilbert: nk.hilbert.Spin = nk.hilbert.Spin(
@@ -31,6 +32,8 @@ class PhaseTransformerConfig(NNConfig):
         )
         training = self.tr_config.training
 
+        object.__setattr__(self, "dtype", self.tr_config.dtype)
+        object.__setattr__(self, "seed", self.tr_config.seed)
         object.__setattr__(self, "hilbert", hilbert)
         object.__setattr__(self, "training", training)
 
@@ -42,9 +45,7 @@ class PhaseTransformer(nn.Module):
         self.transformer = Transformer(self.config.tr_config)
         if self.config.gcnn:
             self.gcnn = GCNN(
-                self.config.tr_config.chain.n,
-                self.config.automorphisms,
-                dtype=self.config.tr_config.dtype,
+                config=self.config.gcnn_config,
             )
         if self.config.pqc:
             self.pqc = PQC(
@@ -57,21 +58,24 @@ class PhaseTransformer(nn.Module):
     @nn.compact
     def __call__(
         self,
-        x: jax.Array,
-        generate: bool = False,
-        n_chains: int = 16,
+        σ: jax.Array = None,
+        generate: bool = None,
+        generate_batch_dim: int = None,
     ):
         if not generate:
-            log_prob = self.transformer(x, generate=generate, n_chains=n_chains)
-            res = 0.5 * log_prob
+            log_psi = self.transformer(
+                σ, generate=generate, generate_batch_dim=generate_batch_dim
+            )
             if self.config.pqc and self.config.phase_train:
-                res += self.pqc(x)
+                log_psi += self.pqc(σ)
 
             if self.config.gcnn and self.config.phase_train:
-                res += 1j * jnp.pi * nn.tanh(self.gcnn(x))
+                log_psi += 1j * jnp.pi * nn.tanh(self.gcnn(σ))
 
-            return res
+            return log_psi
         else:
-            σ, log_prob = self.transformer(x, generate=generate, n_chains=n_chains)
+            σ, log_prob = self.transformer(
+                generate=generate, generate_batch_dim=generate_batch_dim
+            )
 
             return σ, log_prob

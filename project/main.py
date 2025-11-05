@@ -1,14 +1,14 @@
 import logging
-
-# from src.monkey_patch import patch_mc_state
 import os
 import sys
-from argparse import ArgumentParser
 from pathlib import Path
 
+import hydra
 import netket as nk
-
+from omegaconf import DictConfig
 from src.app import App
+
+# from src.monkey_patch import patch_mc_state
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -21,29 +21,14 @@ if str(prj_root) not in sys.path:
 # patch_mc_state()
 
 
-def get_args():
-    parser = ArgumentParser()
-    parser.add_argument("--len", required=False, type=int)
-    parser.add_argument("--h", required=False, type=float)
-    parser.add_argument("--h_min", required=False, type=float)
-    parser.add_argument("--h_max", required=False, type=float)
-    parser.add_argument("--h_n", required=False, type=int)
-    parser.add_argument("--j", required=False, type=float)
-    parser.add_argument("--lam", required=False, type=float)
-    parser.add_argument("--gamma", required=False, type=float)
-    parser.add_argument("--spin", required=False, type=float)
-    parser.add_argument("--path_data", required=False, type=str)
-    parser.add_argument("--train", required=False, type=str)
-    args = parser.parse_args()
+@hydra.main(version_base=None, config_path="config", config_name="config")
+def main(cfg: DictConfig):
+    logging.info(f"NetKet version: {nk.__version__}")
 
-    return args
+    app = App(cfg=cfg)
+
+    app.run()
 
 
 if __name__ == "__main__":
-    logging.info(f"NetKet version: {nk.__version__}")
-
-    args = get_args()
-
-    app = App(args=args)
-
-    app.run()
+    main()

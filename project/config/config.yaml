@@ -1,0 +1,8 @@
+defaults:
+  - chain: xy.yaml
+  - model: transformer.yaml
+  - nqs: config.yaml
+
+path_data: data/report
+train: default
+h: [0, 1.5, 100]

@@ -1,0 +1,10 @@
+_target_: src.model.struct.ChainConfig
+n: 16
+j: -1
+h: 0.0
+spin: 0.5
+pbc: False
+
+# fix
+gamma: 0
+lam: 0

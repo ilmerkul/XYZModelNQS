@@ -14,7 +14,6 @@ project_path = pathlib.Path(os.getcwd())
 sys.path.append(project_path.as_posix())
 
 import netket as nk
-
 from src.model.struct import ChainConfig
 from src.utils import powers_of_two
 

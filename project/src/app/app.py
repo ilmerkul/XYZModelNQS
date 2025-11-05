@@ -1,10 +1,9 @@
 import logging
-import pprint
+import os
 
 import jax
 import numpy as np
-
-from src.app.config import get_ff_config
+from src.app.config import dict2class_config
 from src.model.nqs import ModelNQS, ModelNQSConfig
 from src.result.struct import Result
 from src.utils import report_path
@@ -23,36 +22,22 @@ print("Default device:", jax.default_device)
 
 
 class App:
-    path_data: str = "data/report"
-    save_model_path: str = "data/model"
-    train: str = "default"
-
-    def __init__(self, args):
-        self.args = args
-        self.model_config: ModelNQSConfig = get_ff_config(
-            args=args, save_model_path=self.save_model_path
-        )
-        pprint.pprint(self.model_config)
+    def __init__(self, cfg):
+        self.path_data = cfg["path_data"]
+        self.train = cfg["train"]
+        self.h = cfg["h"]
+        self.model_config = dict2class_config(cfg=cfg)
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(self.model_config)
 
         self.model = ModelNQS(cfg=self.model_config)
 
-        if args.path_data is not None:
-            self.path_data = args.path_data
-
-        if args.train is not None:
-            self.train = args.train
-
     def run(self):
         report_file = report_path(self.model_config.chain, self.path_data)
+        os.makedirs(self.path_data, exist_ok=True)
         report_file.touch()
 
-        if self.args.h is None:
-            h_min = 0.0 if self.args.h_min is None else self.args.h_min
-            h_max = 1.5 if self.args.h_max is None else self.args.h_max
-            h_n = 100 if self.args.h_n is None else self.args.h_n
-            h_rng = np.linspace(h_min, h_max, h_n)
-        else:
-            h_rng = np.array([self.model_config.h])
+        h_rng = np.linspace(*self.h)
 
         with report_file.open("r+") as file:
             lines = file.readlines()
@@ -65,16 +50,16 @@ class App:
             lines = file.readlines()
 
             if len(lines) > 1:
-                file_h = set(map(lambda line: float(line.split(",")[1]), lines[1:]))
+                file_h = set(map(lambda line: float(line.split(",")[5]), lines[1:]))
 
         for h in h_rng:
             if h in file_h:
-                logging.info(f"skip {h}")
+                self.logger.info(f"skip {h}")
                 continue
 
             self.model.set_h(h)
 
-            logging.info(f"Run for h={h:.4f}.\t")
+            self.logger.info(f"Run for h={h:.4f}.\t")
 
             self.model.train()
             res: Result = self.model.get_result()
@@ -82,7 +67,7 @@ class App:
             msg = "Results:\n"
             for res_k, res_v in res.res.items():
                 msg += f"{res_k}: {res_v}\n"
-            logging.info(msg)
+            self.logger.info(msg)
 
             with report_file.open("a") as file:
                 file.writelines([res.row()])

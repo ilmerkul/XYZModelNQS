@@ -1,0 +1,12 @@
+nntype: transformer
+autoregressive: False
+training: True
+use_bias: True
+use_dropout: True
+embed_concat: False
+pos_embed: rope
+dropout_rate: 0.2
+inverse_iter_rate: 0.5
+seed: 42
+eps: 1e-10
+dtype: float32

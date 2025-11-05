@@ -6,7 +6,6 @@ import netket as nk
 from jax import nn as jnn
 from jax import numpy as jnp
 from netket.utils.group import PermutationGroup
-
 from src.model.struct import ChainConfig
 from src.utils import powers_of_two
 
