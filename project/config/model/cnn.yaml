@@ -1,0 +1,6 @@
+nntype: cnn
+dtype: float64
+symm: True
+use_bias: True
+seed: 42
+training: True

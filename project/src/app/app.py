@@ -4,7 +4,7 @@ import os
 import jax
 import numpy as np
 from src.app.config import dict2class_config
-from src.model.nqs import ModelNQS, ModelNQSConfig
+from src.model.nqs import ModelNQS
 from src.result.struct import Result
 from src.utils import report_path
 
@@ -23,6 +23,7 @@ print("Default device:", jax.default_device)
 
 class App:
     def __init__(self, cfg):
+        self.cfg = cfg
         self.path_data = cfg["path_data"]
         self.train = cfg["train"]
         self.h = cfg["h"]
@@ -30,10 +31,10 @@ class App:
         self.logger = logging.getLogger(__name__)
         self.logger.info(self.model_config)
 
-        self.model = ModelNQS(cfg=self.model_config)
+        self.model = ModelNQS(cfg=self.model_config, cfg_exp=cfg, logger=self.logger)
 
     def run(self):
-        report_file = report_path(self.model_config.chain, self.path_data)
+        report_file = report_path(self.cfg, self.path_data)
         os.makedirs(self.path_data, exist_ok=True)
         report_file.touch()
 
@@ -61,13 +62,7 @@ class App:
 
             self.logger.info(f"Run for h={h:.4f}.\t")
 
-            self.model.train()
-            res: Result = self.model.get_result()
-
-            msg = "Results:\n"
-            for res_k, res_v in res.res.items():
-                msg += f"{res_k}: {res_v}\n"
-            self.logger.info(msg)
+            res: Result = self.model.train()
 
             with report_file.open("a") as file:
                 file.writelines([res.row()])

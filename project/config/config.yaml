@@ -1,6 +1,6 @@
 defaults:
-  - chain: xy.yaml
-  - model: transformer.yaml
+  - chain: xx.yaml
+  - model: ffn_symm.yaml
   - nqs: config.yaml
 
 path_data: data/report

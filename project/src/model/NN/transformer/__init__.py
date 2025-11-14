@@ -5,6 +5,7 @@ from .modelBasedTransformer import (
 )
 from .phaseTransformer import PhaseTransformer
 from .transformer import PosEmbType, Transformer, TransformerConfig
+from .tutorial import TutorialViT, TutorialViTConfig
 
 __all__ = [
     "Transformer",
@@ -14,4 +15,6 @@ __all__ = [
     "EnergyBasedTransformer",
     "EnergyBasedTransformerConfig",
     "EnergyOptimModel",
+    "TutorialViTConfig",
+    "TutorialViT",
 ]

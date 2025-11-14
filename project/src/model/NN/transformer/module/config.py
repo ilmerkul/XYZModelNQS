@@ -23,11 +23,9 @@ class TransformerConfig(NNConfig):
     autoregressive: bool
     use_bias: bool
     use_dropout: bool
-    training: bool
     embed_concat: bool
     dropout_rate: float
     inverse_iter_rate: float
-    seed: int
     pos_embed: str
     eps: float
     dtype: Any = field(default_factory=lambda: jnp.float32)

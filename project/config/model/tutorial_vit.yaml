@@ -1,0 +1,5 @@
+nntype: tutorial_vit
+transl_invariant: False
+training: True
+seed: 42
+dtype: float32

@@ -1,9 +1,11 @@
 import dataclasses
+import logging
+import os
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import os
-import pickle
+
 import hydra
 import jax
 import jax.numpy as jnp
@@ -14,16 +16,19 @@ from flax.core import freeze, unfreeze
 from netket.optimizer import identity_preconditioner
 from src.model.NN import NNConfig, NNType
 from src.model.NN.convolution import CNN
-from src.model.NN.feedforward import FF
-from src.model.NN.feedforward.transfer_learning import NN
+from src.model.NN.feedforward import FF, SymmModel
 from src.model.NN.graph import GCNN
-from src.model.NN.transformer import PhaseTransformer, Transformer
-from src.model.nqs.operator import get_model_netket_op
+from src.model.NN.transformer import PhaseTransformer, Transformer, TutorialViT
+from src.model.operator import (
+    create_polynomial_operator,
+    create_shifted_operator,
+    get_model_netket_op,
+)
 from src.model.optimizer import NQSOptimizer
 from src.model.sampler import SamplerType, TransformerSampler
 from src.model.struct import ChainConfig
 from src.result.struct import Result
-from src.utils import report_name
+from src.utils import report_name_with_data
 from tqdm import tqdm
 
 from .callbacks import AdaptiveMomentumCallback, ParametersPrint, VarianceCallback
@@ -47,12 +52,16 @@ class ModelNQSConfig:
     def __post_init__(self):
         self.dtype = self.model_config.dtype
         self.rnd_seed = self.model_config.seed
-        self.save_model_path = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+        self.save_model_path = (
+            hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+        )
 
 
 class ModelNQS:
-    def __init__(self, cfg: ModelNQSConfig):
+    def __init__(self, cfg: ModelNQSConfig, cfg_exp, logger: logging.Logger):
         self.cfg = cfg
+        self.cfg_exp = cfg_exp
+        self.logger = logger
         self.graph = nk.graph.Chain(length=self.cfg.chain.n, pbc=self.cfg.chain.pbc)
         self.hilbert = nk.hilbert.Spin(N=self.cfg.chain.n, s=self.cfg.chain.spin)
         self.key = jrnd.PRNGKey(self.cfg.rnd_seed)
@@ -70,7 +79,7 @@ class ModelNQS:
 
         self._set_optimizer()
 
-        self._set_vmc()
+        self._set_vmc(ham=self.ham)
 
     def _set_ops(self):
         self.ham = get_model_netket_op(
@@ -91,6 +100,10 @@ class ModelNQS:
             self.nn = GCNN(self.cfg.model_config)
         elif nn == NNType.FFN:
             self.nn = FF(self.cfg.model_config)
+        elif nn == NNType.TUTORIAL_VIT:
+            self.nn = TutorialViT(self.cfg.model_config)
+        elif nn == NNType.FFN_SYMM:
+            self.nn = SymmModel(self.cfg.model_config)
         else:
             raise ValueError("error nn")
 
@@ -119,7 +132,7 @@ class ModelNQS:
                 NQSOptimizer.ADAM_PQC, self.cfg.lr, self.cfg.n_iter
             )
 
-    def _set_vmc(self):
+    def _set_vmc(self, ham):
         self.n_samples = max(
             [self.cfg.min_n_samples, self.cfg.chain.n * self.cfg.scale_n_samples]
         )
@@ -147,7 +160,7 @@ class ModelNQS:
             )
 
         self.vmc = nk.driver.VMC(
-            hamiltonian=self.ham,
+            hamiltonian=ham,
             optimizer=self.optimizer,
             variational_state=self.mcstate,
             preconditioner=sr,
@@ -182,7 +195,8 @@ class ModelNQS:
     def train(self):
         logger_runtime = nk.logging.RuntimeLog()
         logger_tensorboard = nk.logging.TensorBoardLog(
-            comment=report_name(self.nn.config.chain)
+            comment="_"
+            + report_name_with_data(self.cfg_exp, f"{self.nn.config.chain.h:.5f}")
         )
         logger_out = [logger_runtime, logger_tensorboard]
 
@@ -193,6 +207,8 @@ class ModelNQS:
             VarianceCallback(),
         ]
         nn = self.cfg.model_config.nntype
+        res = self.get_result()
+        self.logger.info(res)
         if nn == NNType.PHASE_TRANSFORMER:
             n_ter = self.cfg.n_iter
             if self.cfg.model_config.pqc or self.cfg.model_config.gcnn:
@@ -208,22 +224,43 @@ class ModelNQS:
                     self.cfg.model_config, phase_train=True
                 )
                 self.vmc.optimizer = self.optimizer_pqc
-                self._set_vmc()
+                self._set_vmc(ham=self.ham)
                 self.vmc.run(
                     n_iter=n_ter,
                     out=logger_out,
                     callback=callback,
                 )
+            res = self.get_result()
+            self.logger.info(res)
         else:
+            ham = self.ham
+
+            self._set_vmc(ham=ham)
             self.vmc.run(
                 n_iter=self.cfg.n_iter,
                 out=logger_out,
                 callback=callback,
             )
+            res = self.get_result()
+            self.logger.info(res)
+            # while True:
+            #    self._set_vmc(ham=ham)
+            #    self.vmc.run(
+            #    n_iter=self.cfg.n_iter,
+            #    out=logger_out,
+            #    callback=callback,
+            # )
+            #    res = self.get_result()
+            #    self.logger.info(res)
+
+            #    en = jnp.real(self.get_ops_vals(ham)[Result.ENERGY].mean)
+            #    ham = create_shifted_operator(ham=self.ham, sigma=en)
 
         self.save_model()
 
-    def get_result(self) -> Result:
+        return res
+
+    def get_ops_vals(self, ham: nk.operator.AbstractOperator):
         train = self.nn.config.training
         self.nn.config = dataclasses.replace(self.nn.config, training=False)
 
@@ -237,13 +274,18 @@ class ModelNQS:
             chain_length=chain_length, n_discard_per_chain=discard_by_chain
         )
 
-        ops = Result.get_spin_operators(self.cfg.chain, self.hilbert)
+        ops = Result.get_spin_operators(self.cfg.chain, ham, self.hilbert)
         ops_vals = self.vmc.estimate(ops)
+        self.nn.config = dataclasses.replace(self.nn.config, training=train)
+
+        return ops_vals
+
+    def get_result(self) -> Result:
+        ops_vals = self.get_ops_vals(self.ham)
         res = Result(self.cfg.chain)
         res.update(Result.ops_vals_to_res_data(ops_vals))
 
         self.mcstate.n_samples = self.n_samples
-        self.nn.config = dataclasses.replace(self.nn.config, training=train)
         return res
 
     def save_model(self):
@@ -255,16 +297,17 @@ class ModelNQS:
             os.makedirs(self.cfg.save_model_path, exist_ok=True)
 
             model_file = os.path.join(
-                self.cfg.save_model_path, f"{self.nn.__class__.__name__}_params_h({self.cfg.chain.h}).pkl"
+                self.cfg.save_model_path,
+                f"{self.nn.__class__.__name__}_params_h({self.cfg.chain.h}).pkl",
             )
 
             with open(model_file, "wb") as f:
                 pickle.dump(concrete_params, f)
 
-            print(f"Model parameters saved in {model_file}")
+            self.logger.info(f"Model parameters saved in {model_file}")
 
         except Exception as e:
-            print(f"Error saving model: {e}")
+            self.logger.info(f"Error saving model: {e}")
             self._save_model_simple()
 
     def _save_model_simple(self):
@@ -274,22 +317,24 @@ class ModelNQS:
             os.makedirs(self.cfg.save_model_path, exist_ok=True)
 
             model_file = os.path.join(
-                self.cfg.save_model_path, f"{self.nn.__class__.__name__}_simple_h({self.cfg.chain.h}).pkl"
+                self.cfg.save_model_path,
+                f"{self.nn.__class__.__name__}_simple_h({self.cfg.chain.h}).pkl",
             )
 
             with open(model_file, "wb") as f:
                 pickle.dump(params, f)
 
-            print(f"Model saved simply in {model_file}")
+            self.logger.info(f"Model saved simply in {model_file}")
 
         except Exception as e:
-            print(f"Even simple save failed: {e}")
+            self.logger.info(f"Even simple save failed: {e}")
 
     def load_model(self):
         try:
 
             model_file = os.path.join(
-                self.cfg.save_model_path, f"{self.nn.__class__.__name__}_params_h({self.last_h}).pkl"
+                self.cfg.save_model_path,
+                f"{self.nn.__class__.__name__}_params_h({self.last_h}).pkl",
             )
 
             if os.path.exists(model_file):
@@ -298,7 +343,7 @@ class ModelNQS:
                 return loaded_params
             return None
         except Exception as e:
-            print(f"Error loading model: {e}")
+            self.logger.info(f"Error loading model: {e}")
             return None
 
     def apply_fun(
@@ -334,19 +379,13 @@ class ModelNQS:
                 },
                 **kwargs,
             )
-        elif nn == NNType.CNN:
-            output = self.nn.apply(
-                params,
-                variables,
-                **kwargs,
-            )
-        elif nn == NNType.GCNN:
-            output = self.nn.apply(
-                params,
-                variables,
-                **kwargs,
-            )
-        elif nn == NNType.FFN:
+        elif nn in [
+            NNType.CNN,
+            NNType.GCNN,
+            NNType.FFN,
+            NNType.TUTORIAL_VIT,
+            NNType.FFN_SYMM,
+        ]:
             output = self.nn.apply(
                 params,
                 variables,
@@ -368,7 +407,7 @@ class ModelNQS:
 
         variables = self.nn.init(init_rng, inp)
         pam_count = sum(x.size for x in jax.tree_util.tree_leaves(variables))
-        print(f"Parameters count: {pam_count}")
+        self.logger.info(f"Parameters count: {pam_count}")
 
         if self.cfg.tr_learning:
             try:
@@ -401,11 +440,15 @@ class ModelNQS:
                     )
 
                     variables = {"params": noisy_params}
-                    print(f"Loaded model from {self.cfg.save_model_path}")
+                    self.logger.info(f"Loaded model from {self.cfg.save_model_path}")
                 else:
-                    print("No saved model found, using random initialization")
+                    self.logger.info(
+                        "No saved model found, using random initialization"
+                    )
             except Exception as e:
-                print(f"Error loading model: {e}, using random initialization")
+                self.logger.info(
+                    f"Error loading model: {e}, using random initialization"
+                )
 
         return variables
 
@@ -548,84 +591,4 @@ class ModelCustomNQS(ModelNQS):
                 parameters = optax.apply_updates(parameters, updates)
 
             logger(step=i, item={"Energy": E})
-            print(E)
-
-
-class ModelTLNQS(ModelNQS):
-    def __init__(self, cfg: ModelNQSConfig):
-        super().__init__(cfg)
-
-    def set_machine(self, base_weights: Optional[Path] = None):
-        nn = NN(self.n, alpha=5)
-
-        variables = nn.init(jrnd.PRNGKey(self.cfg.rnd_seed), jnp.ones(self.cfg.n))
-        if base_weights is not None:
-            kernel = jnp.load(base_weights.joinpath("kernel.npy"))
-            bias = jnp.load(base_weights.joinpath("bias.npy"))
-
-            updatable = unfreeze(variables)
-            updatable["params"]["base"]["kernel"] = kernel
-            updatable["params"]["base"]["bias"] = bias
-            variables = freeze(updatable)
-
-        self.nn = nn
-        self.variables = variables
-
-    def set_optimizer(self, lr: float = 3e-2, train_base=True):
-        self.train_base = train_base
-        opt = optax.sgd(
-            learning_rate=optax.exponential_decay(lr, 10, 0.97, 1000, end_value=1e-2),
-            momentum=0.9,
-            nesterov=True,
-        )
-
-        def zero_grads():
-            def init_fn(_):
-                return ()
-
-            def update_fn(updates, state, params=None):
-                return jax.tree_map(jnp.zeros_like, updates), ()
-
-            return optax.GradientTransformation(init_fn, update_fn)
-
-        if not train_base:
-            self.optimizer = optax.multi_transform(
-                freeze(
-                    {
-                        "sgd": opt,
-                        "zero": zero_grads(),
-                    }
-                ),
-                freeze({"head": "sgd", "base": "zero"}),
-            )
-        else:
-            self.optimizer = opt
-
-    def set_vmc(self):
-        n_samples = max([2000, self.n * 45])
-        self.mcstate = nk.vqs.MCState(
-            sampler=self.sampler,
-            model=self.nn,
-            n_samples=n_samples,
-            variables=self.variables,
-        )
-        sr = nk.optimizer.SR(solver_restart=False)
-        self.vmc = nk.driver.VMC(
-            hamiltonian=self.ham,
-            optimizer=self.optimizer,
-            variational_state=self.mcstate,
-            preconditioner=sr,
-        )
-
-    def print_base_mean(self):
-        return jnp.mean(self.mcstate.parameters["base"]["kernel"])
-
-    def print_head_mean(self):
-        return jnp.mean(self.mcstate.parameters["head"]["kernel"])
-
-    def save_base_weights(self, prefix: Path):
-        kernel = self.mcstate.parameters["base"]["kernel"]
-        bias = self.mcstate.parameters["base"]["bias"]
-
-        jnp.save(file=prefix.joinpath("kernel.npy"), arr=kernel)
-        jnp.save(file=prefix.joinpath("bias.npy"), arr=bias)
+            self.logger.info(E)

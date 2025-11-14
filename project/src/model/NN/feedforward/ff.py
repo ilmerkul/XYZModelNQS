@@ -2,17 +2,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import flax.linen as nn
-import netket
+import netket as nk
 from jax import nn as jnn
 from jax import numpy as jnp
+from src.model.NN import NNConfig
 from src.model.struct import ChainConfig
 
 
 @dataclass(frozen=True)
-class FFConfig:
+class FFConfig(NNConfig):
     chain: ChainConfig
     dtype: jnp.dtype
-    precision: Any
     use_bias: bool
 
     default_kernel_init: Any = field(init=False)
@@ -40,7 +40,6 @@ class FF(nn.Module):
             features=self.config.chain.n * self.config.alpha,
             dtype=self.config.dtype,
             use_bias=self.config.use_bias,
-            precision=self.config.precision,
             kernel_init=self.config.default_kernel_init,
             bias_init=self.config.default_bias_init,
         )
@@ -48,11 +47,11 @@ class FF(nn.Module):
     @nn.compact
     def __call__(self, x):
         part1 = self.dense(x)
-        part1 = netket.nn.log_cosh(part1)
+        part1 = nk.nn.activation.log_cosh(part1)
         part1 = jnp.sum(part1, axis=-1)
 
         part2 = self.dense(jnp.flip(x, axis=-1))
-        part2 = netket.nn.log_cosh(part2)
+        part2 = nk.nn.activation.log_cosh(part2)
         part2 = jnp.sum(part2, axis=-1)
 
         output = (part1 + part2) / 2.0

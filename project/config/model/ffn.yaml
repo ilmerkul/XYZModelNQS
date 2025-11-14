@@ -1,0 +1,5 @@
+nntype: ffn
+dtype: float64
+use_bias: True
+seed: 42
+training: True

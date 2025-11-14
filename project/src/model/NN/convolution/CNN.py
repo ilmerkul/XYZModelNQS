@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import jax
+import netket as nk
 from flax import linen as nn
 from jax import nn as jnn
 from jax import numpy as jnp
@@ -13,13 +14,14 @@ project_path = pathlib.Path(os.getcwd())
 
 sys.path.append(project_path.as_posix())
 
-import netket as nk
+
+from src.model.NN import NNConfig
 from src.model.struct import ChainConfig
 from src.utils import powers_of_two
 
 
 @dataclass(frozen=True)
-class CNNConfig:
+class CNNConfig(NNConfig):
     chain: ChainConfig
     use_bias: bool
     dtype: jnp.dtype
@@ -105,7 +107,7 @@ class CNN(nn.Module):
             x = (self.dense(x) + self.dense(x[:, :, ::-1])) / 2.0
         else:
             x = self.dense(x)
-        x = nk.nn.log_cosh(x)
+        x = nk.nn.activation.log_cosh(x)
 
         return x.squeeze()
 

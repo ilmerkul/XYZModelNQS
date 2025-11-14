@@ -1,0 +1,4 @@
+nntype: gcnn
+dtype: float64
+seed: 42
+training: True

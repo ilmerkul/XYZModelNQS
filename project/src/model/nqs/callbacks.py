@@ -109,6 +109,7 @@ class AdaptiveMomentumCallback:
             print(f"Step {step}: Loss not improving, disabling momentum")
             self._disable_momentum(driver)
             self.momentum_enabled = False
+            return True
 
         return True
 
@@ -123,7 +124,7 @@ class AdaptiveMomentumCallback:
             ),
             nesterov=False,
         )
-        new_optimizer = optax.adam(learning_rate=self.lr)
+        new_optimizer = optax.sgd(learning_rate=self.lr)
 
         driver.optimizer.optimizer = new_optimizer
         driver.state.optimizer_state = new_optimizer.init(driver.state.parameters)

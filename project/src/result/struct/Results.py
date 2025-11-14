@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import netket as nk
 from netket.operator.spin import sigmax, sigmay, sigmaz
-from src.model.nqs.operator import get_model_netket_op
+from src.model.operator import get_model_netket_op
 from src.model.struct import ChainConfig, NameChain, get_type
 
 from ..exact import (
@@ -55,6 +55,13 @@ class Result:
         self.data = None
         self.res = None
         self.ares = None
+
+    def __str__(self):
+        msg = "Results:\n"
+        for res_k, res_v in self.res.items():
+            msg += f"{res_k}: {res_v}\n"
+
+        return msg
 
     @staticmethod
     def analytical_xy(cfg: ChainConfig) -> Dict[str, float]:
@@ -121,7 +128,10 @@ class Result:
 
     @staticmethod
     def get_spin_operators(
-        cfg: ChainConfig, hilbert: nk.hilbert.Spin, dtype: jnp.dtype = jnp.complex128
+        cfg: ChainConfig,
+        ham: nk.operator.AbstractOperator,
+        hilbert: nk.hilbert.Spin,
+        dtype: jnp.dtype = jnp.complex128,
     ) -> Dict[str, nk.operator.LocalOperator]:
         """
         Generate measurable operators
@@ -143,15 +153,15 @@ class Result:
         ops[Result.SIGMA_ZZ_MID_LEN] = sigmaz(hilbert, 0, dtype=dtype) * sigmaz(
             hilbert, cfg.n // 2
         )
-        ops[Result.ENERGY] = get_model_netket_op(cfg, hilbert)
+        ops[Result.ENERGY] = ham
 
         return ops
 
     @staticmethod
     def ops_vals_to_res_data(ops_vals: jax.tree) -> ResultData:
         return ResultData(
-            energy=jnp.real(ops_vals["e"].mean),
-            energy_var=jnp.real(ops_vals["e"].variance),
+            energy=jnp.real(ops_vals[Result.ENERGY].mean),
+            energy_var=jnp.real(ops_vals[Result.ENERGY].variance),
             spins=jnp.array(
                 [
                     jnp.real(val.mean)
@@ -159,8 +169,8 @@ class Result:
                     if op.startswith("s_")
                 ]
             ),
-            xx=jnp.real(ops_vals["xx"].mean),
-            yy=jnp.real(ops_vals["yy"].mean),
-            zz=jnp.real(ops_vals["zz"].mean),
-            zz_mid=jnp.real(ops_vals["zz_mid"].mean),
+            xx=jnp.real(ops_vals[Result.SIGMA_XX_LEN].mean),
+            yy=jnp.real(ops_vals[Result.SIGMA_YY_LEN].mean),
+            zz=jnp.real(ops_vals[Result.SIGMA_ZZ_LEN].mean),
+            zz_mid=jnp.real(ops_vals[Result.SIGMA_ZZ_MID_LEN].mean),
         )
