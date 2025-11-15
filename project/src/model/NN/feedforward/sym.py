@@ -6,7 +6,7 @@ import netket as nk
 from jax import nn as jnn
 from jax import numpy as jnp
 from netket.utils.group import PermutationGroup
-from src.model.NN import NNConfig
+from ..interface import NNConfig
 from src.model.struct import ChainConfig
 
 
@@ -48,7 +48,7 @@ class SymmModel(nn.Module):
             features=self.config.alpha,
             kernel_init=self.config.default_kernel_init,
             bias_init=self.config.default_bias_init,
-            param_dtype=self.config.dtype
+            param_dtype=self.config.dtype,
         )
         self.dense1 = nn.Dense(
             features=1,

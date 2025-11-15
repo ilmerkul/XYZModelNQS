@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import partial
 
 import jax
@@ -8,7 +9,13 @@ from netket.jax import dtype_real
 from netket.jax.sharding import shard_along_axis
 from netket.sampler.base import Sampler, SamplerState
 from netket.utils.types import PyTree
-from src.model.NN.transformer import Transformer, TransformerConfig
+
+from .interface.type import SamplerConfig
+
+
+@dataclass
+class TransformerSamplerConfig(SamplerConfig):
+    sample_ratio: float
 
 
 class TransformerSamplerState(SamplerState):
@@ -32,14 +39,10 @@ class TransformerSamplerState(SamplerState):
 
 
 class TransformerSampler(Sampler):
-    sample_ratio: float = None
+    def __init__(self, hilbert, graph, cfg: TransformerSamplerConfig):
+        super().__init__(hilbert, machine_pow=cfg.machine_pow, dtype=cfg.dtype)
 
-    def __init__(
-        self, hilbert, sample_ratio: float = 0.2, machine_pow: int = 2, dtype=float
-    ):
-        super().__init__(hilbert, machine_pow=machine_pow, dtype=dtype)
-
-        self.sample_ratio = sample_ratio
+        self.sample_ratio = cfg.sample_ratio
 
     @partial(jax.jit, static_argnames=("machine"))
     def _init_state(self, machine, parameters, key):
@@ -111,23 +114,23 @@ class TransformerSampler(Sampler):
         return f"TransformerSampler(hilbert={self.hilbert})"
 
 
-if __name__ == "__main__":
-    n = 11
-    tr = Transformer(TransformerConfig(training=True, symm=True, length=n))
+@dataclass
+class MetropolisSamplerConfig(SamplerConfig):
+    d_max: int
+    reset_chains: bool
 
-    key = jax.random.PRNGKey(42)
-    init_rngs = {"params": key, "dropout": key}
 
-    # Initialize with dummy input
-    dummy_input = jnp.zeros((16, n), dtype=jnp.int32)
-    params = tr.init(init_rngs, dummy_input)
-
-    hilbert = nk.hilbert.Spin(N=n, s=1 / 2)
-    sampler = TransformerSampler(hilbert)
-
-    # Initialize sampler state
-    state = sampler.init_state(tr, params, seed=42)
-
-    # Generate samples
-    samples, state = sampler.sample(tr, params, state=state, chain_length=100)
-    print("Generated samples shape:", samples.shape)  # (100, 16, 11)
+class MetropolisSampler(nk.sampler.MetropolisSampler):
+    def __init__(self, hilbert, graph, cfg: MetropolisSamplerConfig):
+        rule = nk.sampler.rules.ExchangeRule(graph=graph, d_max=cfg.d_max)
+        super().__init__(
+            hilbert,
+            rule,
+            sweep_size=None,
+            reset_chains=cfg.reset_chains,
+            n_chains=cfg.n_chains,
+            n_chains_per_rank=None,
+            chunk_size=None,
+            machine_pow=cfg.machine_pow,
+            dtype=cfg.dtype,
+        )

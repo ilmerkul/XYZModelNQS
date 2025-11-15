@@ -1,8 +1,10 @@
 defaults:
-  - chain: xx.yaml
-  - model: ffn_symm.yaml
+  - chain: tfi.yaml
+  - model: transformer.yaml
+  - optimizer: sgd_exp.yaml
+  - sampler: metropolis.yaml
   - nqs: config.yaml
 
 path_data: data/report
 train: default
-h: [0, 1.5, 100]
+h: [0, 1.5, 20]

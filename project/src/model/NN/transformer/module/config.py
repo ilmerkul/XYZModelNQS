@@ -4,7 +4,7 @@ from typing import Any
 from flax import linen as nn
 from jax import nn as jnn
 from jax import numpy as jnp
-from src.model.NN import NNConfig
+from ...interface import NNConfig
 from src.model.struct import ChainConfig
 
 
@@ -28,7 +28,7 @@ class TransformerConfig(NNConfig):
     inverse_iter_rate: float
     pos_embed: str
     eps: float
-    dtype: Any = field(default_factory=lambda: jnp.float32)
+    dtype: jnp.dtype
 
     default_kernel_init: Any = field(init=False)
     default_bias_init: Any = field(init=False)

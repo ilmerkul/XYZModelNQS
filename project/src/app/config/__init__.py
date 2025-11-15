@@ -1,3 +1,3 @@
 from .get import dict2class_config
 
-__all__ = ["get_model_nqs_config"]
+__all__ = ["dict2class_config"]

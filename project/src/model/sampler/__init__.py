@@ -1,4 +1,3 @@
-from .sampler import TransformerSampler
-from .type import SamplerType
+from .sampler import TransformerSampler, MetropolisSampler, MetropolisSamplerConfig, TransformerSamplerConfig
 
-__all__ = ["TransformerSampler", "SamplerType"]
+__all__ = ["TransformerSampler", "MetropolisSampler", "MetropolisSamplerConfig", "TransformerSamplerConfig"]

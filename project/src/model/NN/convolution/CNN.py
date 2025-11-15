@@ -15,7 +15,7 @@ project_path = pathlib.Path(os.getcwd())
 sys.path.append(project_path.as_posix())
 
 
-from src.model.NN import NNConfig
+from ..interface import NNConfig
 from src.model.struct import ChainConfig
 from src.utils import powers_of_two
 

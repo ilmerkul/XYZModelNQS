@@ -247,7 +247,7 @@ class OuputHead(nn.Module):
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.model.NN import NNConfig
+from src.model.NN.interface import NNConfig
 from src.model.struct import ChainConfig
 
 

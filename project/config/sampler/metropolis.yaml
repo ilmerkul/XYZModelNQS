@@ -1,0 +1,6 @@
+type: metropolis
+n_chains: 500
+machine_pow: 2
+
+d_max: 2
+reset_chains: False

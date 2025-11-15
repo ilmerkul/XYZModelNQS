@@ -1,10 +1,8 @@
 import dataclasses
 import logging
-import os
-import pickle
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
+from functools import partial
+from typing import List
 
 import hydra
 import jax
@@ -12,42 +10,38 @@ import jax.numpy as jnp
 import jax.random as jrnd
 import netket as nk
 import optax
-from flax.core import freeze, unfreeze
 from netket.optimizer import identity_preconditioner
-from src.model.NN import NNConfig, NNType
-from src.model.NN.convolution import CNN
-from src.model.NN.feedforward import FF, SymmModel
-from src.model.NN.graph import GCNN
-from src.model.NN.transformer import PhaseTransformer, Transformer, TutorialViT
-from src.model.operator import (
-    create_polynomial_operator,
-    create_shifted_operator,
-    get_model_netket_op,
-)
-from src.model.optimizer import NQSOptimizer
-from src.model.sampler import SamplerType, TransformerSampler
+from src.model.NN.interface import NNConfig, NNType
+from src.model.NN.utils import apply_fun, init_fun_tr_learning, save_model, type2nn
+from src.model.nqs.callback.utils import type2callback
+from src.model.operator import get_model_netket_op
+from src.model.operator.interface import PreconditionerType
+from src.model.operator.utils import type2operator
+from src.model.optimizer.interface import OptimizerConfig, OptimizerType
+from src.model.optimizer.utils import type2optimizer
+from src.model.sampler.interface import SamplerConfig, SamplerType
+from src.model.sampler.utils import type2sampler
 from src.model.struct import ChainConfig
 from src.result.struct import Result
 from src.utils import report_name_with_data
 from tqdm import tqdm
 
-from .callbacks import AdaptiveMomentumCallback, ParametersPrint, VarianceCallback
-
 
 @dataclass
 class ModelNQSConfig:
     chain: ChainConfig
-    sampler: str
-    optimizer: str
-    n_iter: int
-    n_chains: int
-    lr: float
     min_n_samples: int
     scale_n_samples: int
     preconditioner: bool
     sr_diag_shift: float
     model_config: NNConfig
     tr_learning: bool
+    noise_scale: float
+    callbacks: List[str]
+    preconditioner_operator: str
+    preconditioner_operator_eps: float
+    sampler: SamplerConfig
+    optimizer: OptimizerConfig
 
     def __post_init__(self):
         self.dtype = self.model_config.dtype
@@ -65,8 +59,11 @@ class ModelNQS:
         self.graph = nk.graph.Chain(length=self.cfg.chain.n, pbc=self.cfg.chain.pbc)
         self.hilbert = nk.hilbert.Spin(N=self.cfg.chain.n, s=self.cfg.chain.spin)
         self.key = jrnd.PRNGKey(self.cfg.rnd_seed)
+        self.preconditioner_operator = type2operator[
+            self.cfg.preconditioner_operator
+        ]
 
-        self.last_h = cfg.chain.h
+        self.model_file = None
 
         self._set_sampler()
 
@@ -86,51 +83,27 @@ class ModelNQS:
             self.cfg.chain,
             self.hilbert,
         )
-        self.ham_jax = self.ham.to_pauli_strings().to_jax_operator()
 
     def _set_machine(self):
-        nn = self.cfg.model_config.nntype
-        if nn == NNType.PHASE_TRANSFORMER:
-            self.nn = PhaseTransformer(self.cfg.model_config)
-        elif nn == NNType.TRANSFORMER:
-            self.nn = Transformer(self.cfg.model_config)
-        elif nn == NNType.CNN:
-            self.nn = CNN(self.cfg.model_config)
-        elif nn == NNType.GCNN:
-            self.nn = GCNN(self.cfg.model_config)
-        elif nn == NNType.FFN:
-            self.nn = FF(self.cfg.model_config)
-        elif nn == NNType.TUTORIAL_VIT:
-            self.nn = TutorialViT(self.cfg.model_config)
-        elif nn == NNType.FFN_SYMM:
-            self.nn = SymmModel(self.cfg.model_config)
-        else:
-            raise ValueError("error nn")
+        self.nn = type2nn[self.cfg.model_config.nntype](self.cfg.model_config)
 
     def _set_sampler(self):
-        if self.cfg.sampler == SamplerType.TRANSFORMER:
-            pass
-        elif self.cfg.sampler == SamplerType.METROPOLIS:
-            self.sampler = nk.sampler.MetropolisSampler(
-                self.hilbert,
-                rule=nk.sampler.rules.ExchangeRule(graph=self.graph, d_max=2),
-                n_chains=self.cfg.n_chains,
-                dtype=self.cfg.dtype,
-            )
-        else:
-            raise ValueError("error sampler")
+        self.sampler = type2sampler[self.cfg.sampler.type](
+            hilbert=self.hilbert,
+            graph=self.graph,
+            cfg=self.cfg.sampler,
+        )
 
     def _set_optimizer(self):
-        self.optimizer = NQSOptimizer.get_optimizer(
-            self.cfg.optimizer, self.cfg.lr, self.cfg.n_iter
-        )
+        self.optimizer = type2optimizer[self.cfg.optimizer.type](self.cfg.optimizer)
         nn = self.cfg.model_config.nntype
         if nn == NNType.PHASE_TRANSFORMER and (
             self.cfg.model_config.pqc or self.cfg.model_config.gcnn
         ):
-            self.optimizer_pqc = NQSOptimizer.get_optimizer(
-                NQSOptimizer.ADAM_PQC, self.cfg.lr, self.cfg.n_iter
+            optimizer = dataclasses.replace(
+                self.cfg.optimizer, type=OptimizerType.ADAM_ZERO_TR
             )
+            self.optimizer_pqc = type2optimizer[self.cfg.optimizer.type](optimizer)
 
     def _set_vmc(self, ham):
         self.n_samples = max(
@@ -146,8 +119,16 @@ class ModelNQS:
         self.mcstate = nk.vqs.MCState(
             sampler=self.sampler,
             n_samples=self.n_samples,
-            init_fun=self.init_fun,
-            apply_fun=self.apply_fun,
+            init_fun=partial(
+                init_fun_tr_learning,
+                model=self.nn,
+                tr_learning=self.cfg.tr_learning,
+                model_file=self.model_file,
+                noise_scale=self.cfg.noise_scale,
+            ),
+            apply_fun=partial(
+                apply_fun, model=self.nn, nntype=self.cfg.model_config.nntype, rnd_seed= self.cfg.rnd_seed
+            ),
             seed=self.key,
             sampler_seed=self.key,
             training_kwargs=training_kwargs,
@@ -169,60 +150,54 @@ class ModelNQS:
     def set_h(self, h: float):
         nn = self.cfg.model_config.nntype
         self.last_h = self.cfg.chain.h
-        if nn == NNType.TRANSFORMER:
-            chain = dataclasses.replace(self.cfg.chain, h=h)
-            self.cfg.chain = chain
-            self.cfg.model_config = dataclasses.replace(
-                self.cfg.model_config, chain=chain
-            )
-        elif nn == NNType.PHASE_TRANSFORMER:
-            chain = dataclasses.replace(self.cfg.chain, h=h)
-            self.cfg.chain = chain
+        chain = dataclasses.replace(self.cfg.chain, h=h)
+        self.cfg.chain = chain
+        if nn == NNType.PHASE_TRANSFORMER:
             tr_config = dataclasses.replace(
                 self.cfg.model_config.tr_config, chain=chain
             )
             self.cfg.model_config = dataclasses.replace(
                 self.cfg.model_config, tr_config=tr_config
             )
-        elif nn == NNType.CNN:
-            chain = dataclasses.replace(self.cfg.chain, h=h)
-            self.cfg.chain = chain
+        else:
             self.cfg.model_config = dataclasses.replace(
                 self.cfg.model_config, chain=chain
             )
         self._init_state()
 
+    def _get_current_exp_hash(self):
+        return report_name_with_data(self.cfg_exp, f"{self.nn.config.chain.h:.5f}")
+
     def train(self):
         logger_runtime = nk.logging.RuntimeLog()
         logger_tensorboard = nk.logging.TensorBoardLog(
-            comment="_"
-            + report_name_with_data(self.cfg_exp, f"{self.nn.config.chain.h:.5f}")
+            comment="_" + self._get_current_exp_hash()
         )
         logger_out = [logger_runtime, logger_tensorboard]
+        callback = [lambda *x: True] + [type2callback[callback]() for callback in self.cfg.callbacks]
 
-        callback = [
-            lambda *x: True,
-            # ParametersPrint(),
-            AdaptiveMomentumCallback(lr=self.cfg.lr, n_iter=self.cfg.n_iter),
-            VarianceCallback(),
-        ]
         nn = self.cfg.model_config.nntype
         res = self.get_result()
         self.logger.info(res)
         if nn == NNType.PHASE_TRANSFORMER:
             n_ter = self.cfg.n_iter
-            if self.cfg.model_config.pqc or self.cfg.model_config.gcnn:
-                n_ter //= 2
+            cfg = self.cfg.model_config
+            if cfg.pqc or cfg.gcnn:
+                n_ter = int(self.cfg.n_iter * (1 - cfg.phase_fine_ratio))
             self.vmc.run(
                 n_iter=n_ter,
                 out=logger_out,
                 callback=callback,
             )
-            # self.sampler = TransformerSampler(self.hilbert)
-            if self.cfg.model_config.pqc or self.cfg.model_config.gcnn:
-                self.cfg.model_config = dataclasses.replace(
-                    self.cfg.model_config, phase_train=True
-                )
+            if cfg.pqc or cfg.gcnn:
+                if cfg.transformer_sampler:
+                    self.sampler = type2sampler[SamplerType.TRANSFORMER](
+                        hilbert=self.hilbert,
+                        graph=self.graph,
+                        cfg=self.cfg.sampler,
+                    )
+                n_ter = self.cfg.optimizer.n_iter - n_ter
+                self.cfg.model_config = dataclasses.replace(cfg, phase_train=True)
                 self.vmc.optimizer = self.optimizer_pqc
                 self._set_vmc(ham=self.ham)
                 self.vmc.run(
@@ -237,26 +212,38 @@ class ModelNQS:
 
             self._set_vmc(ham=ham)
             self.vmc.run(
-                n_iter=self.cfg.n_iter,
+                n_iter=self.cfg.optimizer.n_iter,
                 out=logger_out,
                 callback=callback,
             )
             res = self.get_result()
             self.logger.info(res)
-            # while True:
-            #    self._set_vmc(ham=ham)
-            #    self.vmc.run(
-            #    n_iter=self.cfg.n_iter,
-            #    out=logger_out,
-            #    callback=callback,
-            # )
-            #    res = self.get_result()
-            #    self.logger.info(res)
 
-            #    en = jnp.real(self.get_ops_vals(ham)[Result.ENERGY].mean)
-            #    ham = create_shifted_operator(ham=self.ham, sigma=en)
+            if self.cfg.preconditioner_operator != PreconditionerType.Exact:
+                en = jnp.real(self.get_ops_vals(ham)[Result.ENERGY].mean)
+                delta_en = float("inf")
+                while delta_en > self.cfg.preconditioner_operator_eps:
+                    ham = self.preconditioner_operator(ham=self.ham, sigma=en)
+                    self._set_vmc(ham=ham)
+                    self.vmc.run(
+                        n_iter=self.cfg.n_iter,
+                        out=logger_out,
+                        callback=callback,
+                    )
+                    res = self.get_result()
+                    self.logger.info(res)
 
-        self.save_model()
+                    en_new = jnp.real(self.get_ops_vals(ham)[Result.ENERGY].mean)
+                    delta_en = abs(en_new - en)
+                    en = en_new
+
+        self.model_file = save_model(
+            parameters=self.mcstate.parameters,
+            save_model_path=self.cfg.save_model_path,
+            name_model=self.nn.__class__.__name__,
+            postfix=self._get_current_exp_hash(),
+        )
+        self.logger.info(f"Model is saved: {self.model_file}")
 
         return res
 
@@ -267,7 +254,7 @@ class ModelNQS:
         n_samples = max(
             [self.cfg.min_n_samples, self.cfg.chain.n * self.cfg.scale_n_samples]
         )
-        chain_length = int(n_samples / self.cfg.n_chains)
+        chain_length = int(n_samples / self.cfg.sampler.n_chains)
         discard_by_chain = int(chain_length * 0.3)
         self.mcstate.n_samples = n_samples
         self.mcstate.sample(
@@ -288,174 +275,15 @@ class ModelNQS:
         self.mcstate.n_samples = self.n_samples
         return res
 
-    def save_model(self):
-        try:
-            concrete_params = jax.tree_map(
-                lambda x: x.copy() if hasattr(x, "copy") else x, self.mcstate.parameters
-            )
-
-            os.makedirs(self.cfg.save_model_path, exist_ok=True)
-
-            model_file = os.path.join(
-                self.cfg.save_model_path,
-                f"{self.nn.__class__.__name__}_params_h({self.cfg.chain.h}).pkl",
-            )
-
-            with open(model_file, "wb") as f:
-                pickle.dump(concrete_params, f)
-
-            self.logger.info(f"Model parameters saved in {model_file}")
-
-        except Exception as e:
-            self.logger.info(f"Error saving model: {e}")
-            self._save_model_simple()
-
-    def _save_model_simple(self):
-        try:
-
-            params = self.mcstate.parameters
-            os.makedirs(self.cfg.save_model_path, exist_ok=True)
-
-            model_file = os.path.join(
-                self.cfg.save_model_path,
-                f"{self.nn.__class__.__name__}_simple_h({self.cfg.chain.h}).pkl",
-            )
-
-            with open(model_file, "wb") as f:
-                pickle.dump(params, f)
-
-            self.logger.info(f"Model saved simply in {model_file}")
-
-        except Exception as e:
-            self.logger.info(f"Even simple save failed: {e}")
-
-    def load_model(self):
-        try:
-
-            model_file = os.path.join(
-                self.cfg.save_model_path,
-                f"{self.nn.__class__.__name__}_params_h({self.last_h}).pkl",
-            )
-
-            if os.path.exists(model_file):
-                with open(model_file, "rb") as f:
-                    loaded_params = pickle.load(f)
-                return loaded_params
-            return None
-        except Exception as e:
-            self.logger.info(f"Error loading model: {e}")
-            return None
-
-    def apply_fun(
-        self,
-        params,
-        variables,
-        **kwargs,
-    ):
-        x_hash = jnp.abs(jnp.sum(variables)).astype(jnp.int32)
-        base_key = jrnd.PRNGKey(self.cfg.rnd_seed)
-        key = jrnd.fold_in(base_key, x_hash)
-        dropout_key, symmetry_key, output_key = jrnd.split(key, num=3)
-        nn = self.cfg.model_config.nntype
-        if nn == NNType.PHASE_TRANSFORMER:
-            output = self.nn.apply(
-                params,
-                variables,
-                rngs={
-                    "dropout": dropout_key,
-                    "symmetry": symmetry_key,
-                    "output": output_key,
-                },
-                **kwargs,
-            )
-        elif nn == NNType.TRANSFORMER:
-            output = self.nn.apply(
-                params,
-                variables,
-                rngs={
-                    "dropout": dropout_key,
-                    "symmetry": symmetry_key,
-                    "output": output_key,
-                },
-                **kwargs,
-            )
-        elif nn in [
-            NNType.CNN,
-            NNType.GCNN,
-            NNType.FFN,
-            NNType.TUTORIAL_VIT,
-            NNType.FFN_SYMM,
-        ]:
-            output = self.nn.apply(
-                params,
-                variables,
-                **kwargs,
-            )
-        else:
-            raise ValueError("error apply function")
-
-        return output
-
-    def init_fun(self, params_rng_key, inp):
-        rng_key = params_rng_key["params"]
-        init_rng = {
-            "params": rng_key,
-            "dropout": rng_key,
-            "symmetry": rng_key,
-            "output": rng_key,
-        }
-
-        variables = self.nn.init(init_rng, inp)
-        pam_count = sum(x.size for x in jax.tree_util.tree_leaves(variables))
-        self.logger.info(f"Parameters count: {pam_count}")
-
-        if self.cfg.tr_learning:
-            try:
-                loaded_params = self.load_model()
-                if loaded_params is not None:
-
-                    def add_adaptive_noise(params, key, noise_scale):
-                        def add_noise_to_leaf(param, leaf_key):
-                            param_std = jnp.std(param)
-                            noise = (
-                                jrnd.normal(leaf_key, param.shape)
-                                * param_std
-                                * noise_scale
-                            )
-                            return param + noise
-
-                        keys_tree = jax.tree_util.tree_map(
-                            lambda param: jrnd.fold_in(
-                                key, jnp.sum(param).astype(jnp.int32)
-                            ),
-                            params,
-                        )
-
-                        return jax.tree_util.tree_map(
-                            add_noise_to_leaf, params, keys_tree
-                        )
-
-                    noisy_params = add_adaptive_noise(
-                        loaded_params, rng_key, noise_scale=1.0
-                    )
-
-                    variables = {"params": noisy_params}
-                    self.logger.info(f"Loaded model from {self.cfg.save_model_path}")
-                else:
-                    self.logger.info(
-                        "No saved model found, using random initialization"
-                    )
-            except Exception as e:
-                self.logger.info(
-                    f"Error loading model: {e}, using random initialization"
-                )
-
-        return variables
-
 
 class ModelCustomNQS(ModelNQS):
     def __init__(self, cfg: ModelNQSConfig):
         super().__init__(cfg)
+
+    def _set_ops(self):
+        res = super()._set_ops()
+        self.ham_jax = self.ham.to_pauli_strings().to_jax_operator()
+        return res
 
     def to_array(self, parameters):
         all_configurations = self.hilbert.all_states()

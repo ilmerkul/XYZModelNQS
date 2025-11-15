@@ -114,7 +114,7 @@ class Result:
         self.res = self._update(res_data)
 
     def row(self) -> str:
-        row = ",".join(map(lambda x: str(x), asdict(self.cfg).values())) + ","
+        row = ",".join(map(lambda x: '"' + str(x) + '"' if isinstance(x, list) else str(x), asdict(self.cfg).values())) + ","
         row += ",".join(map(lambda x: f"{x:.5f}", list(self.res.values())))
         row += "\n"
         return row

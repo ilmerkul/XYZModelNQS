@@ -1,169 +1,228 @@
+from dataclasses import dataclass
+
 import jax
-import netket as nk
 import optax
 from jax import numpy as jnp
 
+from .interface.type import OptimizerConfig
 
-class NQSOptimizer:
-    ADAM: str = "adam"
-    ADAM_COS: str = "adam_cos"
-    ADAM_EXP: str = "adam_exp"
-    SGD_LIN_EXP: str = "sgd_lin_exp"
-    SGD_EXP: str = "sgd_exp"
-    ADAM_ZERO_PQC: str = "adam_zero_pqc"
-    ADAM_PQC: str = "adam_pqc"
 
-    @staticmethod
-    def get_optimizer(type: str, lr: float, n_iter: int):
-        if type == NQSOptimizer.ADAM:
-            optimizer = nk.optimizer.Adam(lr)
-        elif type == NQSOptimizer.ADAM_COS:
-            optimizer = optax.adam(
-                learning_rate=optax.cosine_decay_schedule(init_value=lr, decay_steps=10)
-            )
-        elif type == NQSOptimizer.ADAM_EXP:
-            optimizer = optax.adam(
-                learning_rate=optax.join_schedules(
-                    [
-                        optax.constant_schedule(lr * 10),
-                        optax.exponential_decay(
-                            init_value=lr * 10,
-                            transition_steps=(n_iter - n_iter // 4),
-                            decay_rate=0.8,
-                            end_value=lr,
-                        ),
-                    ],
-                    boundaries=[n_iter // 4],
-                )
-            )
-        elif type == NQSOptimizer.SGD_LIN_EXP:
-            optimizer = optax.sgd(
+def global_norm_optimizer(optimizer_func):
+    def wrapper(cfg: OptimizerConfig):
+        optimizer = optimizer_func(cfg)
+        return optax.chain(
+            optax.clip_by_global_norm(max_norm=cfg.global_norm), optimizer
+        )
+
+    return wrapper
+
+
+@dataclass
+class AdamConfig(OptimizerConfig):
+    b1: float
+    b2: float
+    eps: float
+
+
+@global_norm_optimizer
+def adam(cfg: AdamConfig):
+    return optax.adam(learning_rate=cfg.lr, b1=cfg.b1, b2=cfg.b2, eps=cfg.eps)
+
+
+@dataclass
+class AdamExpConfig(OptimizerConfig):
+    b1: float
+    b2: float
+    eps: float
+
+
+@global_norm_optimizer
+def adam_exp(cfg: AdamExpConfig):
+    return optax.adam(
+        learning_rate=optax.join_schedules(
+            [
+                optax.constant_schedule(cfg.lr * 10),
+                optax.exponential_decay(
+                    init_value=cfg.lr * 10,
+                    transition_steps=(cfg.n_iter - cfg.n_iter // 4),
+                    decay_rate=0.8,
+                    end_value=cfg.lr,
+                ),
+            ],
+            boundaries=[cfg.n_iter // 4],
+        )
+    )
+
+
+@dataclass
+class AdamCosConfig(OptimizerConfig):
+    b1: float
+    b2: float
+    eps: float
+
+
+@global_norm_optimizer
+def adam_cos(cfg: AdamCosConfig):
+    return optax.adam(
+        learning_rate=optax.cosine_decay_schedule(
+            init_value=cfg.lr, decay_steps=cfg.n_iter
+        )
+    )
+
+
+@dataclass
+class SGDLinExpConfig(OptimizerConfig):
+    decay_rate: float
+    nesterov: bool
+    momentum: float
+
+
+@global_norm_optimizer
+def sgd_lin_exp(cfg: SGDLinExpConfig):
+    return optax.sgd(
+        learning_rate=optax.join_schedules(
+            [
+                optax.linear_schedule(
+                    init_value=cfg.lr,
+                    end_value=cfg.lr * 10,
+                    transition_steps=cfg.n_iter // 4,
+                ),
+                optax.constant_schedule(cfg.lr * 10),
+                optax.exponential_decay(
+                    init_value=cfg.lr * 10,
+                    transition_steps=(cfg.n_iter - cfg.n_iter // (4 / 3)) // 2,
+                    decay_rate=0.8,
+                    end_value=cfg.lr,
+                ),
+            ],
+            boundaries=[cfg.n_iter // 4, cfg.n_iter // (4 / 3)],
+        ),
+        momentum=cfg.momentum,
+        nesterov=cfg.nesterov,
+    )
+
+
+@dataclass
+class SGDExpConfig(OptimizerConfig):
+    decay_rate: float
+    nesterov: bool
+    momentum: float
+
+
+@global_norm_optimizer
+def sgd_exp(cfg: SGDExpConfig):
+    return optax.sgd(
+        learning_rate=optax.exponential_decay(
+            init_value=cfg.lr * 10,
+            transition_steps=(cfg.n_iter - cfg.n_iter // 4) // (4 / 3),
+            decay_rate=cfg.decay_rate,
+            transition_begin=cfg.n_iter // 4,
+            end_value=cfg.lr,
+        ),
+        momentum=cfg.momentum,
+        nesterov=cfg.nesterov,
+    )
+
+
+def zero_grads():
+    def init_fn(_):
+        return ()
+
+    def update_fn(updates, state, params=None):
+        return jax.tree_map(jnp.zeros_like, updates), ()
+
+    return optax.GradientTransformation(init_fn, update_fn)
+
+
+def map_nested_fn(fn):
+    def map_fn(nested_dict, carry=False):
+        result = {}
+        current_carry = carry
+        for k, v in nested_dict.items():
+            # Определяем метку
+            label = fn(k, current_carry)
+            # Обновляем carry
+            if label == "tr":
+                current_carry = True
+
+            if isinstance(v, dict):
+                result[k] = map_fn(v, current_carry)
+            else:
+                result[k] = label
+        return result
+
+    return map_fn
+
+
+label_fn = map_nested_fn(
+    lambda k, carry: "tr" if (k.startswith("tr") or carry) else "pqc"
+)
+
+
+@dataclass
+class AdamZeroPqcTrConfig(OptimizerConfig):
+    decay_rate: float
+    nesterov: bool
+    momentum: float
+
+
+@global_norm_optimizer
+def adam_zero_pqc(cfg: AdamZeroPqcTrConfig):
+    return optax.multi_transform(
+        {
+            "tr": optax.sgd(
                 learning_rate=optax.join_schedules(
                     [
                         optax.linear_schedule(
-                            init_value=lr,
-                            end_value=lr * 10,
-                            transition_steps=n_iter // 4,
+                            init_value=cfg.lr,
+                            end_value=cfg.lr * 10,
+                            transition_steps=cfg.n_iter // 4,
                         ),
-                        optax.constant_schedule(lr * 10),
+                        optax.constant_schedule(cfg.lr * 10),
                         optax.exponential_decay(
-                            init_value=lr * 10,
-                            transition_steps=(n_iter - n_iter // (4 / 3)) // 2,
-                            decay_rate=0.8,
-                            end_value=lr,
+                            init_value=cfg.lr * 10,
+                            transition_steps=(cfg.n_iter - cfg.n_iter // (4 / 3)) // 2,
+                            decay_rate=cfg.decay_rate,
+                            end_value=cfg.lr,
                         ),
                     ],
-                    boundaries=[n_iter // 4, n_iter // (4 / 3)],
+                    boundaries=[cfg.n_iter // 4, cfg.n_iter // (4 / 3)],
                 ),
-                momentum=0.999,
-                nesterov=True,
-            )
-        elif type == NQSOptimizer.SGD_EXP:
-            optimizer = optax.sgd(
-                learning_rate=optax.exponential_decay(
-                    init_value=lr * 10,
-                    transition_steps=(n_iter - n_iter // 4) // (4 / 3),
-                    decay_rate=0.9,
-                    transition_begin=n_iter // 4,
-                    end_value=lr,
+                momentum=cfg.momentum,
+                nesterov=cfg.nesterov,
+            ),
+            "pqc": zero_grads(),
+        },
+        label_fn,
+    )
+
+
+@global_norm_optimizer
+def adam_zero_tr(cfg: AdamZeroPqcTrConfig):
+    return optax.multi_transform(
+        {
+            "pqc": optax.sgd(
+                learning_rate=optax.join_schedules(
+                    [
+                        optax.linear_schedule(
+                            init_value=cfg.lr,
+                            end_value=cfg.lr * 10,
+                            transition_steps=cfg.n_iter // 4,
+                        ),
+                        optax.constant_schedule(cfg.lr * 10),
+                        optax.exponential_decay(
+                            init_value=cfg.lr * 10,
+                            transition_steps=(cfg.n_iter - cfg.n_iter // (4 / 3)) // 2,
+                            decay_rate=cfg.decay_rate,
+                            end_value=cfg.lr,
+                        ),
+                    ],
+                    boundaries=[cfg.n_iter // 4, cfg.n_iter // (4 / 3)],
                 ),
-                momentum=0.999,
-                nesterov=True,
-            )
-        elif type == NQSOptimizer.ADAM_ZERO_PQC or type == NQSOptimizer.ADAM_PQC:
-
-            def zero_grads():
-                def init_fn(_):
-                    return ()
-
-                def update_fn(updates, state, params=None):
-                    return jax.tree_map(jnp.zeros_like, updates), ()
-
-                return optax.GradientTransformation(init_fn, update_fn)
-
-            def map_nested_fn(fn):
-                def map_fn(nested_dict, carry=False):
-                    result = {}
-                    current_carry = carry
-                    for k, v in nested_dict.items():
-                        # Определяем метку
-                        label = fn(k, current_carry)
-                        # Обновляем carry
-                        if label == "tr":
-                            current_carry = True
-
-                        if isinstance(v, dict):
-                            result[k] = map_fn(v, current_carry)
-                        else:
-                            result[k] = label
-                    return result
-
-                return map_fn
-
-            label_fn = map_nested_fn(
-                lambda k, carry: "tr" if (k.startswith("tr") or carry) else "pqc"
-            )
-            if type == NQSOptimizer.ADAM_ZERO_PQC:
-                optimizer = optax.multi_transform(
-                    {
-                        "tr": optax.sgd(
-                            learning_rate=optax.join_schedules(
-                                [
-                                    optax.linear_schedule(
-                                        init_value=lr,
-                                        end_value=lr * 10,
-                                        transition_steps=n_iter // 4,
-                                    ),
-                                    optax.constant_schedule(lr * 10),
-                                    optax.exponential_decay(
-                                        init_value=lr * 10,
-                                        transition_steps=(n_iter - n_iter // (4 / 3))
-                                        // 2,
-                                        decay_rate=0.8,
-                                        end_value=lr,
-                                    ),
-                                ],
-                                boundaries=[n_iter // 4, n_iter // (4 / 3)],
-                            ),
-                            momentum=0.999,
-                            nesterov=True,
-                        ),
-                        "pqc": zero_grads(),
-                    },
-                    label_fn,
-                )
-            else:
-                optimizer = optax.multi_transform(
-                    {
-                        "pqc": optax.sgd(
-                            learning_rate=optax.join_schedules(
-                                [
-                                    optax.linear_schedule(
-                                        init_value=lr,
-                                        end_value=lr * 10,
-                                        transition_steps=n_iter // 4,
-                                    ),
-                                    optax.constant_schedule(lr * 10),
-                                    optax.exponential_decay(
-                                        init_value=lr * 10,
-                                        transition_steps=(n_iter - n_iter // (4 / 3))
-                                        // 2,
-                                        decay_rate=0.8,
-                                        end_value=lr,
-                                    ),
-                                ],
-                                boundaries=[n_iter // 4, n_iter // (4 / 3)],
-                            ),
-                            momentum=0.999,
-                            nesterov=True,
-                        ),
-                        "tr": zero_grads(),
-                    },
-                    label_fn,
-                )
-        else:
-            raise ValueError()
-
-        optimizer = optax.chain(optax.clip_by_global_norm(max_norm=1.0), optimizer)
-
-        return optimizer
+                momentum=cfg.momentum,
+                nesterov=cfg.nesterov,
+            ),
+            "tr": zero_grads(),
+        },
+        label_fn,
+    )

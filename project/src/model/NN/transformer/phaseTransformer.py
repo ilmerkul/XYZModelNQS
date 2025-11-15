@@ -5,8 +5,6 @@ import flax.linen as nn
 import jax
 import netket as nk
 from jax import numpy as jnp
-from netket.utils.group import PermutationGroup
-from src.model.NN import NNConfig
 
 from ..graph.GCNN import GCNN, GCNNConfig
 from ..quantum.PQC import PQC
@@ -14,45 +12,40 @@ from .transformer import Transformer, TransformerConfig
 
 
 @dataclass(frozen=True)
-class PhaseTransformerConfig(NNConfig):
-    tr_config: TransformerConfig
+class PhaseTransformerConfig(TransformerConfig, GCNNConfig):
     pqc: bool
     gcnn: bool
-    phase_train: bool = False
-    gcnn_config: GCNNConfig = None
+    phase_train: bool
+    phase_fine_ratio: float
 
     hilbert: Any = field(init=False)
-    dtype: Any = field(init=False)
-    training: int = field(init=False)
-    seed: int = field(init=False)
 
     def __post_init__(self):
-        hilbert: nk.hilbert.Spin = nk.hilbert.Spin(
-            N=self.tr_config.chain.n, s=self.tr_config.chain.spin
-        )
-        training = self.tr_config.training
+        super(self, TransformerConfig).__post_init__()
+        super(self, GCNNConfig).__post_init__()
 
-        object.__setattr__(self, "dtype", self.tr_config.dtype)
-        object.__setattr__(self, "seed", self.tr_config.seed)
+        hilbert: nk.hilbert.Spin = nk.hilbert.Spin(
+            N=self.chain.n, s=self.chain.spin
+        )
+
         object.__setattr__(self, "hilbert", hilbert)
-        object.__setattr__(self, "training", training)
 
 
 class PhaseTransformer(nn.Module):
     config: PhaseTransformerConfig
 
     def setup(self):
-        self.transformer = Transformer(self.config.tr_config)
+        self.transformer = Transformer(self.config)
         if self.config.gcnn:
             self.gcnn = GCNN(
-                config=self.config.gcnn_config,
+                config=self.config,
             )
         if self.config.pqc:
             self.pqc = PQC(
                 self.config.hilbert,
-                self.config.tr_config.chain.n,
+                self.config.chain.n,
                 2,
-                dtype=self.config.tr_config.dtype,
+                dtype=self.config.dtype,
             )
 
     @nn.compact
